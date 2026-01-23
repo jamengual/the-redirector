@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/your-org/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 // Severity indicates the severity of an issue.

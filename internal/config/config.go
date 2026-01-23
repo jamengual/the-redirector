@@ -13,11 +13,67 @@ import (
 
 // Config represents the complete redirector configuration.
 type Config struct {
-	Version  string        `yaml:"version"`
-	Server   ServerConfig  `yaml:"server"`
-	Defaults DefaultConfig `yaml:"defaults"`
-	Stats    *StatsConfig  `yaml:"stats"`
-	Rules    []Rule        `yaml:"rules"`
+	Version   string           `yaml:"version"`
+	Server    ServerConfig     `yaml:"server"`
+	Defaults  DefaultConfig    `yaml:"defaults"`
+	Stats     *StatsConfig     `yaml:"stats"`
+	Auth      *AuthConfig      `yaml:"auth"`
+	Tracing   *TracingConfig   `yaml:"tracing"`
+	RateLimit *RateLimitConfig `yaml:"rate_limit"`
+	Rules     []Rule           `yaml:"rules"`
+}
+
+// RateLimitConfig configures rate limiting.
+type RateLimitConfig struct {
+	Enabled     bool              `yaml:"enabled"`
+	GlobalRPS   float64           `yaml:"global_rps"`    // Global requests per second
+	GlobalBurst int               `yaml:"global_burst"`  // Global burst size
+	PerIPRPS    float64           `yaml:"per_ip_rps"`    // Per-IP requests per second
+	PerIPBurst  int               `yaml:"per_ip_burst"`  // Per-IP burst size
+	PathLimits  []PathLimitConfig `yaml:"path_limits"`   // Path-specific limits
+	TrustProxy  bool              `yaml:"trust_proxy"`   // Trust X-Forwarded-For
+	ExemptIPs   []string          `yaml:"exempt_ips"`    // IPs that bypass rate limiting
+}
+
+// PathLimitConfig configures rate limiting for a specific path.
+type PathLimitConfig struct {
+	Path  string  `yaml:"path"`  // Path or prefix (with *)
+	RPS   float64 `yaml:"rps"`   // Requests per second
+	Burst int     `yaml:"burst"` // Burst size
+}
+
+// TracingConfig configures OpenTelemetry tracing.
+type TracingConfig struct {
+	Enabled      bool    `yaml:"enabled"`
+	Endpoint     string  `yaml:"endpoint"`       // OTLP endpoint (e.g., "localhost:4317")
+	ServiceName  string  `yaml:"service_name"`   // Service name (default: "the-redirector")
+	Environment  string  `yaml:"environment"`    // Deployment environment
+	SamplingRate float64 `yaml:"sampling_rate"`  // Sampling rate (0.0-1.0, default: 1.0)
+	Insecure     bool    `yaml:"insecure"`       // Use insecure connection (no TLS)
+}
+
+// AuthConfig configures management API authentication.
+type AuthConfig struct {
+	Enabled  bool           `yaml:"enabled"`
+	APIKeys  []APIKeyConfig `yaml:"api_keys"`
+	JWT      *JWTConfig     `yaml:"jwt"`
+	AllowIPs []string       `yaml:"allow_ips"`
+}
+
+// APIKeyConfig represents a single API key.
+type APIKeyConfig struct {
+	Name        string   `yaml:"name"`
+	Key         string   `yaml:"key"`
+	Permissions []string `yaml:"permissions"`
+}
+
+// JWTConfig configures JWT authentication.
+type JWTConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Secret    string `yaml:"secret"`
+	PublicKey string `yaml:"public_key"`
+	Issuer    string `yaml:"issuer"`
+	Audience  string `yaml:"audience"`
 }
 
 // StatsConfig configures the statistics collector.

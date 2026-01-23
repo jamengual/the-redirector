@@ -13,9 +13,9 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/your-org/the-redirector/internal/config"
-	"github.com/your-org/the-redirector/internal/server"
-	"github.com/your-org/the-redirector/internal/watcher"
+	"github.com/jamengual/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/server"
+	"github.com/jamengual/the-redirector/internal/watcher"
 )
 
 var (

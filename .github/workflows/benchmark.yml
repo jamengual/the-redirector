@@ -43,6 +43,76 @@ env:
   K6_VERSION: 'v0.49.0'
 
 jobs:
+  # Go benchmark regression detection
+  go-benchmark:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for base branch comparison
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run benchmarks on PR branch
+        run: |
+          mkdir -p benchmark-results
+          go test -bench=. -benchmem -count=5 ./internal/router/... ./internal/server/... 2>/dev/null | tee benchmark-results/new.txt
+
+      - name: Checkout base branch
+        run: git checkout ${{ github.base_ref }}
+
+      - name: Run benchmarks on base branch
+        run: |
+          go test -bench=. -benchmem -count=5 ./internal/router/... ./internal/server/... 2>/dev/null | tee benchmark-results/old.txt || true
+
+      - name: Checkout PR branch again
+        run: git checkout ${{ github.head_ref }}
+
+      - name: Compare benchmarks
+        id: benchstat
+        run: |
+          echo "## Benchmark Comparison" > benchmark-results/comparison.md
+          echo "" >> benchmark-results/comparison.md
+          echo '```' >> benchmark-results/comparison.md
+          benchstat benchmark-results/old.txt benchmark-results/new.txt >> benchmark-results/comparison.md 2>&1 || echo "No comparable benchmarks found" >> benchmark-results/comparison.md
+          echo '```' >> benchmark-results/comparison.md
+
+          # Check for significant regressions (>10% slower)
+          if benchstat benchmark-results/old.txt benchmark-results/new.txt 2>/dev/null | grep -E '\+[1-9][0-9]\.[0-9]+%|\+[0-9]{3,}\.[0-9]+%'; then
+            echo "regression=true" >> $GITHUB_OUTPUT
+            echo "⚠️ **Warning: Potential performance regression detected!**" >> benchmark-results/comparison.md
+          else
+            echo "regression=false" >> $GITHUB_OUTPUT
+            echo "✅ No significant performance regressions detected." >> benchmark-results/comparison.md
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-benchmark-results
+          path: benchmark-results/
+
+      - name: Comment PR with benchmark results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const comparison = fs.readFileSync('benchmark-results/comparison.md', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📊 Go Benchmark Results\n\n${comparison}`
+            });
+
   # Quick smoke test for PRs
   smoke-test:
     if: github.event_name == 'pull_request'
@@ -303,16 +373,16 @@ jobs:
   # Comment on PR with results
   comment-pr:
     if: github.event_name == 'pull_request'
-    needs: smoke-test
+    needs: [smoke-test, go-benchmark]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
-      - name: Download results
+      - name: Download k6 results
         uses: actions/download-artifact@v4
         with:
           name: smoke-test-results
-          path: results/
+          path: k6-results/
 
       - name: Create PR comment
         uses: actions/github-script@v7
@@ -322,10 +392,12 @@ jobs:
           script: |
             const commitSha = process.env.COMMIT_SHA;
 
-            let comment = `## 🚀 Performance Smoke Test Results\n\n`;
+            let comment = `## 🚀 Performance Test Summary\n\n`;
             comment += `**Commit:** \`${commitSha}\`\n\n`;
-            comment += `The smoke test ran successfully. `;
-            comment += `For detailed benchmarks, trigger the workflow manually with different profiles.\n\n`;
+            comment += `### Tests Run\n`;
+            comment += `- ✅ Go benchmarks (with regression detection)\n`;
+            comment += `- ✅ k6 smoke test\n\n`;
+            comment += `See individual job artifacts for detailed results.\n\n`;
             comment += `<details>\n<summary>How to run full benchmarks</summary>\n\n`;
             comment += `1. Go to Actions → Performance Benchmark\n`;
             comment += `2. Click "Run workflow"\n`;

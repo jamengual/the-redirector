@@ -14,10 +14,17 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
-	"github.com/your-org/the-redirector/internal/config"
-	"github.com/your-org/the-redirector/internal/metrics"
-	"github.com/your-org/the-redirector/internal/router"
-	"github.com/your-org/the-redirector/internal/stats"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/jamengual/the-redirector/internal/auth"
+	"github.com/jamengual/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/metrics"
+	"github.com/jamengual/the-redirector/internal/ratelimit"
+	"github.com/jamengual/the-redirector/internal/router"
+	"github.com/jamengual/the-redirector/internal/stats"
+	"github.com/jamengual/the-redirector/internal/tracing"
+	"github.com/jamengual/the-redirector/internal/versioning"
 )
 
 // Server handles HTTP requests and redirects.
@@ -27,6 +34,11 @@ type Server struct {
 	router     *router.Router
 	stats      *stats.Collector
 	metrics    *metrics.Metrics
+	authMiddleware  *auth.Middleware
+	versionStore    *versioning.Store
+	auditLog        *versioning.AuditLog
+	tracingProvider *tracing.Provider
+	rateLimiter     *ratelimit.Limiter
 
 	httpServer       *fasthttp.Server
 	managementServer *fasthttp.Server
@@ -70,18 +82,135 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		}),
 	)
 
-	s := &Server{
-		cfg:         cfg,
-		configPath:  configPath,
-		router:      r,
-		stats:       stats.NewCollector(statsCfg),
-		metrics:     m,
-		promHandler: promHandler,
+	// Create auth middleware if configured
+	var authMiddleware *auth.Middleware
+	if cfg.Auth != nil {
+		authCfg := &auth.Config{
+			Enabled:  cfg.Auth.Enabled,
+			AllowIPs: cfg.Auth.AllowIPs,
+		}
+
+		// Convert API key configs
+		for _, key := range cfg.Auth.APIKeys {
+			permissions := make([]auth.Permission, len(key.Permissions))
+			for i, p := range key.Permissions {
+				permissions[i] = auth.Permission(p)
+			}
+			authCfg.APIKeys = append(authCfg.APIKeys, auth.APIKeyEntry{
+				Name:        key.Name,
+				Key:         key.Key,
+				Permissions: permissions,
+			})
+		}
+
+		// Convert JWT config
+		if cfg.Auth.JWT != nil {
+			authCfg.JWT = &auth.JWTConfig{
+				Enabled:   cfg.Auth.JWT.Enabled,
+				Secret:    cfg.Auth.JWT.Secret,
+				PublicKey: cfg.Auth.JWT.PublicKey,
+				Issuer:    cfg.Auth.JWT.Issuer,
+				Audience:  cfg.Auth.JWT.Audience,
+			}
+		}
+
+		var err error
+		authMiddleware, err = auth.NewMiddleware(authCfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating auth middleware: %w", err)
+		}
+
+		if authCfg.Enabled {
+			log.Info().
+				Int("api_keys", len(authCfg.APIKeys)).
+				Bool("jwt", authCfg.JWT != nil && authCfg.JWT.Enabled).
+				Int("allow_ips", len(authCfg.AllowIPs)).
+				Msg("Authentication enabled for management API")
+		}
 	}
 
-	// Configure main HTTP server
+	// Create version store and audit log
+	versionStore := versioning.NewStore(10) // Keep last 10 versions
+	auditLog := versioning.NewAuditLog(1000)
+
+	// Create rate limiter
+	var rateLimiter *ratelimit.Limiter
+	if cfg.RateLimit != nil && cfg.RateLimit.Enabled {
+		rateLimitCfg := &ratelimit.Config{
+			Enabled:     cfg.RateLimit.Enabled,
+			GlobalRPS:   cfg.RateLimit.GlobalRPS,
+			GlobalBurst: cfg.RateLimit.GlobalBurst,
+			PerIPRPS:    cfg.RateLimit.PerIPRPS,
+			PerIPBurst:  cfg.RateLimit.PerIPBurst,
+			TrustProxy:  cfg.RateLimit.TrustProxy,
+			ExemptIPs:   cfg.RateLimit.ExemptIPs,
+		}
+		for _, pl := range cfg.RateLimit.PathLimits {
+			rateLimitCfg.PathLimits = append(rateLimitCfg.PathLimits, ratelimit.PathLimit{
+				Path:  pl.Path,
+				RPS:   pl.RPS,
+				Burst: pl.Burst,
+			})
+		}
+		rateLimiter = ratelimit.New(rateLimitCfg)
+		log.Info().
+			Float64("global_rps", rateLimitCfg.GlobalRPS).
+			Float64("per_ip_rps", rateLimitCfg.PerIPRPS).
+			Msg("Rate limiting enabled")
+	}
+
+	// Create tracing provider
+	var tracingProvider *tracing.Provider
+	if cfg.Tracing != nil && cfg.Tracing.Enabled {
+		tracingCfg := &tracing.Config{
+			Enabled:      cfg.Tracing.Enabled,
+			Endpoint:     cfg.Tracing.Endpoint,
+			ServiceName:  cfg.Tracing.ServiceName,
+			Environment:  cfg.Tracing.Environment,
+			SamplingRate: cfg.Tracing.SamplingRate,
+			Insecure:     cfg.Tracing.Insecure,
+		}
+		var err error
+		tracingProvider, err = tracing.NewProvider(context.Background(), tracingCfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating tracing provider: %w", err)
+		}
+		log.Info().
+			Str("endpoint", tracingCfg.Endpoint).
+			Float64("sampling_rate", tracingCfg.SamplingRate).
+			Msg("OpenTelemetry tracing enabled")
+	} else {
+		// Create disabled provider for no-op tracing
+		tracingProvider, _ = tracing.NewProvider(context.Background(), nil)
+	}
+
+	s := &Server{
+		cfg:             cfg,
+		configPath:      configPath,
+		router:          r,
+		stats:           stats.NewCollector(statsCfg),
+		metrics:         m,
+		authMiddleware:  authMiddleware,
+		versionStore:    versionStore,
+		auditLog:        auditLog,
+		tracingProvider: tracingProvider,
+		rateLimiter:     rateLimiter,
+		promHandler:     promHandler,
+	}
+
+	// Record initial config version
+	initialVersion := versionStore.Add(cfg, configPath)
+	auditLog.LogConfigChange(versioning.AuditEventConfigLoaded, initialVersion, "system", "startup")
+	log.Info().Int("version", initialVersion.Version).Str("hash", initialVersion.Hash).Msg("Initial config version recorded")
+
+	// Configure main HTTP server handler with optional rate limiting
+	redirectHandler := s.handleRedirect
+	if rateLimiter != nil {
+		redirectHandler = rateLimiter.Middleware(redirectHandler)
+	}
+
 	s.httpServer = &fasthttp.Server{
-		Handler:            s.handleRedirect,
+		Handler:            redirectHandler,
 		Name:               "the-redirector",
 		ReadTimeout:        5 * time.Second,
 		WriteTimeout:       5 * time.Second,
@@ -90,9 +219,14 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		DisableKeepalive:   false,
 	}
 
-	// Configure management server
+	// Configure management server with auth middleware
+	managementHandler := s.handleManagement
+	if authMiddleware != nil && authMiddleware.IsEnabled() {
+		managementHandler = authMiddleware.Wrap(s.handleManagement)
+	}
+
 	s.managementServer = &fasthttp.Server{
-		Handler:      s.handleManagement,
+		Handler:      managementHandler,
 		Name:         "the-redirector-mgmt",
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -129,6 +263,18 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Info().Msg("Shutting down servers")
 		s.httpServer.Shutdown()
 		s.managementServer.Shutdown()
+		// Shutdown tracing provider
+		if s.tracingProvider != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.tracingProvider.Shutdown(shutdownCtx); err != nil {
+				log.Error().Err(err).Msg("Failed to shutdown tracing provider")
+			}
+		}
+		// Shutdown rate limiter
+		if s.rateLimiter != nil {
+			s.rateLimiter.Close()
+		}
 		return nil
 	case err := <-errChan:
 		return err
@@ -142,6 +288,14 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
 	host := string(ctx.Host())
 	method := string(ctx.Method())
+
+	// Start tracing span if enabled
+	var span trace.Span
+	if s.tracingProvider != nil && s.tracingProvider.IsEnabled() {
+		_, span = s.tracingProvider.StartRequestSpan(context.Background(), method, path, host)
+		defer span.End()
+		span.SetAttributes(tracing.AttrClientIP.String(ctx.RemoteIP().String()))
+	}
 
 	// Track in-flight requests
 	if s.metrics != nil {
@@ -192,9 +346,17 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 	}()
 
 	if rule == nil {
+		if span != nil {
+			tracing.RecordNoMatch(span)
+		}
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString("Not Found")
 		return
+	}
+
+	// Record rule match in tracing span
+	if span != nil {
+		tracing.RecordRuleMatch(span, rule.ID, string(rule.Match.Type), rule.Redirect.GetLocation(), rule.Redirect.Status)
 	}
 
 	// Set custom headers first
@@ -260,34 +422,117 @@ func (s *Server) handleManagement(ctx *fasthttp.RequestCtx) {
 	path := string(ctx.Path())
 
 	switch {
+	// Public endpoints (no auth required)
 	case path == "/health":
 		s.handleHealth(ctx)
 	case path == "/ready":
 		s.handleReady(ctx)
 	case path == "/metrics":
 		s.handleMetrics(ctx)
+
+	// Read endpoints (require read permission if auth enabled)
 	case path == "/api/v1/config":
+		if !s.requirePermission(ctx, auth.PermissionRead) {
+			return
+		}
 		s.handleConfig(ctx)
 	case path == "/api/v1/rules":
+		if !s.requirePermission(ctx, auth.PermissionRead) {
+			return
+		}
 		s.handleRules(ctx)
 	case path == "/stats":
+		if !s.requirePermission(ctx, auth.PermissionStatsRead) {
+			return
+		}
 		s.handleStats(ctx)
 	case strings.HasPrefix(path, "/stats/live"):
+		if !s.requirePermission(ctx, auth.PermissionStatsRead) {
+			return
+		}
 		s.handleStatsLive(ctx)
 	case strings.HasPrefix(path, "/stats/rule/"):
+		if !s.requirePermission(ctx, auth.PermissionStatsRead) {
+			return
+		}
 		s.handleStatsRule(ctx)
+
+	// Write endpoints (require specific permissions)
 	case path == "/stats/enable":
+		if !s.requirePermission(ctx, auth.PermissionStatsWrite) {
+			return
+		}
 		s.handleStatsEnable(ctx)
 	case path == "/stats/disable":
+		if !s.requirePermission(ctx, auth.PermissionStatsWrite) {
+			return
+		}
 		s.handleStatsDisable(ctx)
 	case path == "/stats/reset":
+		if !s.requirePermission(ctx, auth.PermissionStatsWrite) {
+			return
+		}
 		s.handleStatsReset(ctx)
 	case path == "/api/v1/reload":
+		if !s.requirePermission(ctx, auth.PermissionReload) {
+			return
+		}
 		s.handleReload(ctx)
+
+	// Version endpoints
+	case path == "/api/v1/versions":
+		if !s.requirePermission(ctx, auth.PermissionRead) {
+			return
+		}
+		s.handleVersions(ctx)
+	case path == "/api/v1/versions/current":
+		if !s.requirePermission(ctx, auth.PermissionRead) {
+			return
+		}
+		s.handleCurrentVersion(ctx)
+	case path == "/api/v1/rollback":
+		if !s.requirePermission(ctx, auth.PermissionWrite) {
+			return
+		}
+		s.handleRollback(ctx)
+
+	// Audit endpoint
+	case path == "/api/v1/audit":
+		if !s.requirePermission(ctx, auth.PermissionRead) {
+			return
+		}
+		s.handleAudit(ctx)
+
 	default:
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString("Not Found")
 	}
+}
+
+// requirePermission checks if the request has the required permission.
+// Returns true if permission granted, false if denied (and sends 403).
+func (s *Server) requirePermission(ctx *fasthttp.RequestCtx, perm auth.Permission) bool {
+	if s.authMiddleware == nil || !s.authMiddleware.IsEnabled() {
+		return true // Auth disabled, allow all
+	}
+
+	principal, ok := ctx.UserValue("principal").(*auth.Principal)
+	if !ok {
+		// This shouldn't happen if middleware ran, but handle gracefully
+		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`{"error":"unauthorized","message":"authentication required"}`)
+		return false
+	}
+
+	if !principal.HasPermission(perm) {
+		ctx.SetStatusCode(fasthttp.StatusForbidden)
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`{"error":"forbidden","message":"permission denied: ` + string(perm) + `"}`)
+		return false
+	}
+
+	return true
 }
 
 func (s *Server) handleHealth(ctx *fasthttp.RequestCtx) {
@@ -333,11 +578,23 @@ func (s *Server) handleRules(ctx *fasthttp.RequestCtx) {
 func (s *Server) ReloadConfig(path string) error {
 	start := time.Now()
 
+	// Start tracing span if enabled
+	var span trace.Span
+	ctx := context.Background()
+	if s.tracingProvider != nil && s.tracingProvider.IsEnabled() {
+		ctx, span = s.tracingProvider.StartConfigReloadSpan(ctx, path)
+		defer span.End()
+	}
+
 	// LoadDirectory handles both files and directories
 	cfg, err := config.LoadDirectory(path)
 	if err != nil {
 		if s.metrics != nil {
 			s.metrics.RecordConfigReload(false, 0, time.Since(start).Seconds())
+		}
+		if span != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "config load failed")
 		}
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -347,6 +604,10 @@ func (s *Server) ReloadConfig(path string) error {
 		if s.metrics != nil {
 			s.metrics.RecordConfigReload(false, 0, time.Since(start).Seconds())
 		}
+		if span != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "router creation failed")
+		}
 		return fmt.Errorf("creating router: %w", err)
 	}
 
@@ -355,12 +616,26 @@ func (s *Server) ReloadConfig(path string) error {
 	s.router = r
 	s.mu.Unlock()
 
+	// Record config version
+	version := s.versionStore.Add(cfg, path)
+	s.auditLog.LogConfigChange(versioning.AuditEventConfigReloaded, version, "system", "reload")
+
 	// Record successful reload
 	if s.metrics != nil {
 		s.metrics.RecordConfigReload(true, len(cfg.Rules), time.Since(start).Seconds())
 	}
 
-	log.Info().Int("rules", len(cfg.Rules)).Msg("Configuration reloaded")
+	// Record in tracing span
+	if span != nil {
+		tracing.RecordConfigReload(span, version.Version, len(cfg.Rules), time.Since(start))
+		span.SetStatus(codes.Ok, "config reloaded successfully")
+	}
+
+	log.Info().
+		Int("rules", len(cfg.Rules)).
+		Int("version", version.Version).
+		Str("hash", version.Hash).
+		Msg("Configuration reloaded")
 	return nil
 }
 
@@ -530,5 +805,186 @@ func (s *Server) handleReload(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(fmt.Sprintf(`{"status":"reloaded","rules_count":%d,"duration_ms":%d}`,
 		rulesCount, time.Since(start).Milliseconds()))
+	ctx.SetContentType("application/json")
+}
+
+// Version management handlers
+
+func (s *Server) handleVersions(ctx *fasthttp.RequestCtx) {
+	versions := s.versionStore.List()
+
+	// Create response without full config
+	type versionInfo struct {
+		Version    int                       `json:"version"`
+		Hash       string                    `json:"hash"`
+		LoadedAt   time.Time                 `json:"loaded_at"`
+		Source     string                    `json:"source"`
+		RulesCount int                       `json:"rules_count"`
+		Changes    *versioning.ConfigChanges `json:"changes,omitempty"`
+	}
+
+	result := make([]versionInfo, len(versions))
+	for i, v := range versions {
+		result[i] = versionInfo{
+			Version:    v.Version,
+			Hash:       v.Hash,
+			LoadedAt:   v.LoadedAt,
+			Source:     v.Source,
+			RulesCount: v.RulesCount,
+			Changes:    v.Changes,
+		}
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
+	ctx.SetContentType("application/json")
+}
+
+func (s *Server) handleCurrentVersion(ctx *fasthttp.RequestCtx) {
+	current := s.versionStore.Current()
+	if current == nil {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		ctx.SetBodyString(`{"error":"no version available"}`)
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	response := struct {
+		Version    int                       `json:"version"`
+		Hash       string                    `json:"hash"`
+		LoadedAt   time.Time                 `json:"loaded_at"`
+		Source     string                    `json:"source"`
+		RulesCount int                       `json:"rules_count"`
+		Changes    *versioning.ConfigChanges `json:"changes,omitempty"`
+	}{
+		Version:    current.Version,
+		Hash:       current.Hash,
+		LoadedAt:   current.LoadedAt,
+		Source:     current.Source,
+		RulesCount: current.RulesCount,
+		Changes:    current.Changes,
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
+	ctx.SetContentType("application/json")
+}
+
+func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
+	// Only allow POST
+	if !ctx.IsPost() {
+		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		ctx.SetBodyString(`{"error":"method not allowed, use POST"}`)
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	// Parse version from request body
+	var req struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString(`{"error":"invalid request body, expected {\"version\": N}"}`)
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	if req.Version < 1 {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetBodyString(`{"error":"version must be >= 1"}`)
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	// Find the version to rollback to
+	targetVersion := s.versionStore.Get(req.Version)
+	if targetVersion == nil {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"version %d not found"}`, req.Version))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	// Perform rollback
+	rolledBack := s.versionStore.Rollback(req.Version)
+	if rolledBack == nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(`{"error":"rollback failed"}`)
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	// Update the server with the rolled back config
+	r, err := router.New(rolledBack.Config.Rules)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"failed to create router: %s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	s.mu.Lock()
+	s.cfg = rolledBack.Config
+	s.router = r
+	s.mu.Unlock()
+
+	// Get actor from auth principal if available
+	actor := "anonymous"
+	if principal, ok := ctx.UserValue("principal").(*auth.Principal); ok {
+		actor = principal.ID
+	}
+
+	// Log the rollback
+	s.auditLog.LogConfigChange(versioning.AuditEventConfigRollback, rolledBack, actor, ctx.RemoteIP().String())
+	log.Info().
+		Int("from_version", req.Version).
+		Int("new_version", rolledBack.Version).
+		Str("actor", actor).
+		Msg("Config rolled back")
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(fmt.Sprintf(`{"status":"rolled_back","from_version":%d,"new_version":%d,"rules_count":%d}`,
+		req.Version, rolledBack.Version, rolledBack.RulesCount))
+	ctx.SetContentType("application/json")
+}
+
+func (s *Server) handleAudit(ctx *fasthttp.RequestCtx) {
+	// Parse limit from query string
+	limit := 100
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	events := s.auditLog.Recent(limit)
+
+	data, err := json.Marshal(events)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
 	ctx.SetContentType("application/json")
 }

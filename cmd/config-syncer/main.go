@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +29,15 @@ type SyncerConfig struct {
 
 	// Output defines where to write the fetched config
 	Output OutputConfig `yaml:"output"`
+
+	// Targets for multi-target push (alternative to Output.API)
+	Targets []TargetConfig `yaml:"targets"`
+
+	// Webhook server configuration
+	Webhook WebhookConfig `yaml:"webhook"`
+
+	// Retry configuration
+	Retry RetryConfig `yaml:"retry"`
 
 	// Logging configuration
 	LogLevel  string `yaml:"log_level"`
@@ -141,6 +155,29 @@ type APIOutputConfig struct {
 	URL     string            `yaml:"url"`
 	Headers map[string]string `yaml:"headers,omitempty"`
 	Timeout time.Duration     `yaml:"timeout"`
+	APIKey  string            `yaml:"api_key,omitempty"`
+}
+
+// TargetConfig configures a redirector target for multi-target push.
+type TargetConfig struct {
+	Name    string        `yaml:"name"`
+	URL     string        `yaml:"url"`
+	APIKey  string        `yaml:"api_key,omitempty"`
+	Timeout time.Duration `yaml:"timeout"`
+	Healthy bool          `yaml:"-"`
+}
+
+// WebhookConfig configures the webhook server.
+type WebhookConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
+	Secret  string `yaml:"secret"`
+}
+
+// RetryConfig configures retry behavior.
+type RetryConfig struct {
+	Attempts int           `yaml:"attempts"`
+	Delay    time.Duration `yaml:"delay"`
 }
 
 func main() {
@@ -188,6 +225,11 @@ func main() {
 		cancel()
 	}()
 
+	// Start webhook server if enabled
+	if cfg.Webhook.Enabled && cfg.Webhook.Port > 0 {
+		go startWebhookServer(ctx, cfg.Webhook.Port, cfg.Webhook.Secret, syncer)
+	}
+
 	// Run syncer
 	if *oneShot {
 		if err := syncer.SyncOnce(ctx, *dryRun); err != nil {
@@ -199,6 +241,69 @@ func main() {
 
 	// Run sync loop
 	syncer.Run(ctx, *dryRun)
+}
+
+// startWebhookServer starts the webhook HTTP server.
+func startWebhookServer(ctx context.Context, port int, secret string, syncer *Syncer) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Log webhook event
+		eventType := ""
+		if gh := r.Header.Get("X-GitHub-Event"); gh != "" {
+			eventType = "github:" + gh
+		} else if gl := r.Header.Get("X-Gitlab-Event"); gl != "" {
+			eventType = "gitlab:" + gl
+		}
+
+		log.Info().Str("event", eventType).Msg("Received webhook")
+
+		// Trigger sync
+		syncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := syncer.SyncOnce(syncCtx, false); err != nil {
+			log.Error().Err(err).Msg("Webhook-triggered sync failed")
+			http.Error(w, "Sync failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"healthy"}`))
+	})
+
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		status := syncer.GetStatus()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
+	})
+
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: mux,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(shutdownCtx)
+	}()
+
+	log.Info().Int("port", port).Msg("Starting webhook server")
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Error().Err(err).Msg("Webhook server error")
+	}
 }
 
 func loadSyncerConfig(path string) (*SyncerConfig, error) {
@@ -222,6 +327,17 @@ func loadSyncerConfig(path string) (*SyncerConfig, error) {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
 	}
+	if cfg.Retry.Attempts == 0 {
+		cfg.Retry.Attempts = 3
+	}
+	if cfg.Retry.Delay == 0 {
+		cfg.Retry.Delay = 1 * time.Second
+	}
+	for i := range cfg.Targets {
+		if cfg.Targets[i].Timeout == 0 {
+			cfg.Targets[i].Timeout = 10 * time.Second
+		}
+	}
 
 	return &cfg, nil
 }
@@ -230,6 +346,48 @@ func loadSyncerConfig(path string) (*SyncerConfig, error) {
 type Syncer struct {
 	cfg     *SyncerConfig
 	sources []ConfigSource
+
+	mu           sync.RWMutex
+	syncCount    int64
+	syncErrors   int64
+	lastSyncTime time.Time
+}
+
+// SyncerStatus represents the syncer's current state.
+type SyncerStatus struct {
+	SyncCount    int64          `json:"sync_count"`
+	SyncErrors   int64          `json:"sync_errors"`
+	LastSyncTime time.Time      `json:"last_sync_time"`
+	Targets      []TargetStatus `json:"targets"`
+}
+
+// TargetStatus represents a target's health.
+type TargetStatus struct {
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Healthy bool   `json:"healthy"`
+}
+
+// GetStatus returns the current syncer status.
+func (s *Syncer) GetStatus() SyncerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	targets := make([]TargetStatus, len(s.cfg.Targets))
+	for i, t := range s.cfg.Targets {
+		targets[i] = TargetStatus{
+			Name:    t.Name,
+			URL:     t.URL,
+			Healthy: t.Healthy,
+		}
+	}
+
+	return SyncerStatus{
+		SyncCount:    s.syncCount,
+		SyncErrors:   s.syncErrors,
+		LastSyncTime: s.lastSyncTime,
+		Targets:      targets,
+	}
 }
 
 // ConfigSource is the interface for config sources.
@@ -322,11 +480,23 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 
 		// Write output
 		if err := s.writeOutput(ctx, data); err != nil {
+			s.mu.Lock()
+			s.syncErrors++
+			s.mu.Unlock()
 			return fmt.Errorf("writing output: %w", err)
 		}
 
+		s.mu.Lock()
+		s.syncCount++
+		s.lastSyncTime = time.Now()
+		s.mu.Unlock()
+
 		return nil
 	}
+
+	s.mu.Lock()
+	s.syncErrors++
+	s.mu.Unlock()
 
 	if lastErr != nil {
 		return fmt.Errorf("all sources failed, last error: %w", lastErr)
@@ -405,13 +575,169 @@ func (s *Syncer) writeFileOutput(data []byte) error {
 }
 
 func (s *Syncer) writeAPIOutput(ctx context.Context, data []byte) error {
+	// If targets are configured, use multi-target push
+	if len(s.cfg.Targets) > 0 {
+		return s.pushToTargets(ctx, data)
+	}
+
+	// Fall back to single API output
 	if s.cfg.Output.API == nil {
 		return fmt.Errorf("API output not configured")
 	}
 
-	// TODO: Implement HTTP POST to redirector API
-	// This would use net/http to POST the config to the redirector's management API
-	log.Info().Str("url", s.cfg.Output.API.URL).Msg("Would push config to API (not implemented)")
+	return s.pushToSingleAPI(ctx, s.cfg.Output.API, data)
+}
+
+// pushToTargets pushes config to all targets concurrently.
+func (s *Syncer) pushToTargets(ctx context.Context, data []byte) error {
+	var wg sync.WaitGroup
+	errors := make(chan error, len(s.cfg.Targets))
+
+	for i := range s.cfg.Targets {
+		target := &s.cfg.Targets[i]
+		wg.Add(1)
+		go func(t *TargetConfig) {
+			defer wg.Done()
+			if err := s.pushToTargetWithRetry(ctx, t, data); err != nil {
+				errors <- fmt.Errorf("target %s: %w", t.Name, err)
+				t.Healthy = false
+			} else {
+				t.Healthy = true
+				log.Info().Str("target", t.Name).Msg("Config pushed successfully")
+			}
+		}(target)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Collect errors
+	var errs []error
+	for err := range errors {
+		errs = append(errs, err)
+		log.Error().Err(err).Msg("Target push failed")
+	}
+
+	if len(errs) > 0 {
+		s.mu.Lock()
+		s.syncErrors += int64(len(errs))
+		s.mu.Unlock()
+		return fmt.Errorf("%d targets failed", len(errs))
+	}
+
+	return nil
+}
+
+// pushToTargetWithRetry pushes to a single target with exponential backoff.
+func (s *Syncer) pushToTargetWithRetry(ctx context.Context, target *TargetConfig, data []byte) error {
+	attempts := s.cfg.Retry.Attempts
+	if attempts == 0 {
+		attempts = 3
+	}
+	delay := s.cfg.Retry.Delay
+	if delay == 0 {
+		delay = 1 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= attempts; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff
+			backoff := delay * time.Duration(1<<(attempt-1))
+			log.Debug().
+				Str("target", target.Name).
+				Int("attempt", attempt).
+				Dur("delay", backoff).
+				Msg("Retrying push")
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		err := s.doPush(ctx, target, data)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		log.Warn().Err(err).Str("target", target.Name).Int("attempt", attempt).Msg("Push attempt failed")
+	}
+
+	return lastErr
+}
+
+// doPush performs the actual HTTP request.
+func (s *Syncer) doPush(ctx context.Context, target *TargetConfig, data []byte) error {
+	url := target.URL + "/api/v1/reload"
+
+	timeout := target.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	if target.APIKey != "" {
+		req.Header.Set("X-API-Key", target.APIKey)
+	}
+	req.Header.Set("Content-Type", "application/yaml")
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// pushToSingleAPI pushes to a single API endpoint (legacy mode).
+func (s *Syncer) pushToSingleAPI(ctx context.Context, cfg *APIOutputConfig, data []byte) error {
+	url := cfg.URL + "/api/v1/reload"
+
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	for k, v := range cfg.Headers {
+		req.Header.Set(k, v)
+	}
+	if cfg.APIKey != "" {
+		req.Header.Set("X-API-Key", cfg.APIKey)
+	}
+	req.Header.Set("Content-Type", "application/yaml")
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	log.Info().Str("url", cfg.URL).Msg("Config pushed to API")
 	return nil
 }
 

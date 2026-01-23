@@ -1,0 +1,18 @@
+apiVersion: v2
+name: the-redirector
+description: A high-performance URL redirect and response service
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - redirect
+  - url
+  - proxy
+  - fasthttp
+  - go
+maintainers:
+  - name: The Redirector Team
+sources:
+  - https://github.com/jamengual/the-redirector
+home: https://github.com/jamengual/the-redirector
+icon: https://raw.githubusercontent.com/jamengual/the-redirector/main/docs/logo.png

@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rs/zerolog/log"
-	"github.com/your-org/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 // S3SourceConfig configures the S3 source.

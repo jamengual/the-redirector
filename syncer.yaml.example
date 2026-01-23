@@ -1,0 +1,100 @@
+# Config-syncer configuration example
+# This service fetches configuration from various sources and pushes
+# to multiple redirector instances.
+
+# How often to check for config updates
+sync_interval: 60s
+
+# Configuration sources (tried in priority order)
+sources:
+  # Local file source (highest priority)
+  - name: local-file
+    type: file
+    priority: 100
+    enabled: true
+    file:
+      path: /etc/redirector/config.yaml
+
+  # AWS S3 source
+  - name: s3-config
+    type: s3
+    priority: 50
+    enabled: false
+    s3:
+      bucket: my-config-bucket
+      key: redirector/config.yaml
+      region: us-east-1
+      # role_arn: arn:aws:iam::123456789012:role/config-reader  # For cross-account
+      # endpoint: http://localhost:9000  # For S3-compatible (MinIO)
+
+  # GitHub repository source
+  - name: github-config
+    type: github
+    priority: 25
+    enabled: false
+    github:
+      owner: myorg
+      repo: redirector-config
+      path: config.yaml
+      ref: main
+      strategy: branch  # release, tag, branch, commit
+      # GitHub App auth (recommended)
+      # app_id: 12345
+      # installation_id: 67890
+      # private_key_path: /etc/redirector/github-app.pem
+      # Or PAT (less secure)
+      # token: ${GITHUB_TOKEN}
+
+  # HTTP source (generic)
+  - name: http-config
+    type: http
+    priority: 10
+    enabled: false
+    http:
+      url: https://config.example.com/redirector.yaml
+      timeout: 30s
+      headers:
+        Authorization: "Bearer ${CONFIG_API_TOKEN}"
+
+# Output configuration (where to write fetched config)
+output:
+  type: both  # file, api, or both
+
+  # Write to local file (for redirector to pick up via file watcher)
+  file:
+    path: /etc/redirector/config.yaml
+    mode: 0644
+    atomic: true  # Use tmp + rename for atomic writes
+
+  # Push directly to redirector API
+  api:
+    url: http://localhost:8081
+    api_key: ${REDIRECTOR_API_KEY}
+    timeout: 10s
+
+# Multi-target push (alternative to output.api for multiple redirectors)
+targets:
+  - name: redirector-1
+    url: http://redirector-1:8081
+    api_key: ${REDIRECTOR_API_KEY}
+    timeout: 10s
+
+  - name: redirector-2
+    url: http://redirector-2:8081
+    api_key: ${REDIRECTOR_API_KEY}
+    timeout: 10s
+
+# Retry configuration for failed pushes
+retry:
+  attempts: 3
+  delay: 1s  # Exponential backoff applied
+
+# Webhook server for GitHub/GitLab push events
+webhook:
+  enabled: true
+  port: 8082
+  secret: ${WEBHOOK_SECRET}
+
+# Logging
+log_level: info  # debug, info, warn, error
+log_format: json  # json, console

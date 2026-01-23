@@ -1,0 +1,215 @@
+# Default values for the-redirector.
+# This is a YAML-formatted file.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/jamengual/the-redirector
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# Main service (redirect traffic)
+service:
+  type: ClusterIP
+  port: 8080
+
+# Management service (health, metrics, API)
+managementService:
+  type: ClusterIP
+  port: 8081
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: redirector.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: redirector-tls
+  #    hosts:
+  #      - redirector.local
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# Redirector configuration
+config:
+  # Inline configuration (takes precedence over configMap)
+  # Set this to provide config directly in values
+  inline: ""
+
+  # Name of an existing ConfigMap containing config.yaml
+  existingConfigMap: ""
+
+  # If neither inline nor existingConfigMap is set,
+  # a default config is created from these values:
+  server:
+    port: 8080
+    managementPort: 8081
+    readTimeout: 5s
+    writeTimeout: 5s
+    maxConnections: 100000
+
+  defaults:
+    statusCode: 301
+    preserveQuery: true
+
+  stats:
+    enabled: true
+    bufferSize: 1000
+    samplingRate: 1.0
+
+  # Authentication for management API
+  auth:
+    enabled: false
+    # API keys (use secrets for production)
+    apiKeys: []
+    #  - name: admin
+    #    key: ${ADMIN_API_KEY}
+    #    permissions: [admin]
+    # JWT configuration
+    jwt:
+      enabled: false
+      # secret: ${JWT_SECRET}
+    # IP allowlist - SECURITY WARNING: IPs listed here bypass ALL authentication!
+    # Default: empty (disabled) - this is the secure default.
+    # Only use for trusted internal services that cannot provide credentials.
+    allowIPs: []
+    # allowIPs:
+    #   - "10.0.0.5"  # Specific IP only - avoid broad CIDRs
+
+  # OpenTelemetry tracing
+  tracing:
+    enabled: false
+    endpoint: ""                  # OTLP gRPC endpoint (e.g., "tempo:4317")
+    serviceName: "the-redirector"
+    environment: ""
+    samplingRate: 1.0
+    insecure: true
+
+  # Rate limiting
+  rateLimit:
+    enabled: false
+    globalRPS: 10000
+    globalBurst: 20000
+    perIPRPS: 100
+    perIPBurst: 200
+    trustProxy: false
+    exemptIPs: []
+    pathLimits: []
+    # pathLimits:
+    #   - path: "/api/expensive"
+    #     rps: 10
+    #     burst: 20
+
+  # Redirect rules
+  rules: []
+  #  - id: example
+  #    match:
+  #      type: exact
+  #      path: /old-path
+  #    redirect:
+  #      to: https://example.com/new-path
+  #      status: 301
+
+# Prometheus ServiceMonitor
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  # Additional labels for ServiceMonitor
+
+# Environment variables
+env: []
+#  - name: API_GATEWAY_URL
+#    value: "https://gateway.example.com"
+
+# Environment variables from secrets/configmaps
+envFrom: []
+#  - secretRef:
+#      name: redirector-secrets
+
+# Extra volumes
+extraVolumes: []
+
+# Extra volume mounts
+extraVolumeMounts: []
+
+# Liveness probe
+livenessProbe:
+  httpGet:
+    path: /health
+    port: management
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Readiness probe
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: management
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
