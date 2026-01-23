@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"expvar"
 	"fmt"
+	"net/http/pprof"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -503,6 +506,58 @@ func (s *Server) handleManagement(ctx *fasthttp.RequestCtx) {
 		}
 		s.handleAudit(ctx)
 
+	// Debug endpoints (require admin permission)
+	case path == "/debug/pprof/":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofIndex(ctx)
+	case path == "/debug/pprof/cmdline":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofCmdline(ctx)
+	case path == "/debug/pprof/profile":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofProfile(ctx)
+	case path == "/debug/pprof/symbol":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofSymbol(ctx)
+	case path == "/debug/pprof/trace":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofTrace(ctx)
+	case strings.HasPrefix(path, "/debug/pprof/"):
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handlePprofHandler(ctx)
+	case path == "/debug/vars":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handleDebugVars(ctx)
+	case path == "/debug/config":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handleDebugConfig(ctx)
+	case path == "/debug/rules":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handleDebugRules(ctx)
+	case path == "/debug/runtime":
+		if !s.requirePermission(ctx, auth.PermissionAdmin) {
+			return
+		}
+		s.handleDebugRuntime(ctx)
+
 	default:
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString("Not Found")
@@ -977,6 +1032,248 @@ func (s *Server) handleAudit(ctx *fasthttp.RequestCtx) {
 	events := s.auditLog.Recent(limit)
 
 	data, err := json.Marshal(events)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
+	ctx.SetContentType("application/json")
+}
+
+// Debug endpoint handlers
+
+func (s *Server) handlePprofIndex(ctx *fasthttp.RequestCtx) {
+	fasthttpadaptor.NewFastHTTPHandlerFunc(pprof.Index)(ctx)
+}
+
+func (s *Server) handlePprofCmdline(ctx *fasthttp.RequestCtx) {
+	fasthttpadaptor.NewFastHTTPHandlerFunc(pprof.Cmdline)(ctx)
+}
+
+func (s *Server) handlePprofProfile(ctx *fasthttp.RequestCtx) {
+	fasthttpadaptor.NewFastHTTPHandlerFunc(pprof.Profile)(ctx)
+}
+
+func (s *Server) handlePprofSymbol(ctx *fasthttp.RequestCtx) {
+	fasthttpadaptor.NewFastHTTPHandlerFunc(pprof.Symbol)(ctx)
+}
+
+func (s *Server) handlePprofTrace(ctx *fasthttp.RequestCtx) {
+	fasthttpadaptor.NewFastHTTPHandlerFunc(pprof.Trace)(ctx)
+}
+
+func (s *Server) handlePprofHandler(ctx *fasthttp.RequestCtx) {
+	// Extract the profile name from the path
+	path := string(ctx.Path())
+	name := strings.TrimPrefix(path, "/debug/pprof/")
+	fasthttpadaptor.NewFastHTTPHandler(pprof.Handler(name))(ctx)
+}
+
+func (s *Server) handleDebugVars(ctx *fasthttp.RequestCtx) {
+	// Use expvar handler adapted to fasthttp
+	fasthttpadaptor.NewFastHTTPHandler(expvar.Handler())(ctx)
+}
+
+func (s *Server) handleDebugConfig(ctx *fasthttp.RequestCtx) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Create a sanitized config view (mask sensitive values)
+	type sanitizedConfig struct {
+		Version  string `json:"version"`
+		Server   struct {
+			Port           int    `json:"port"`
+			ManagementPort int    `json:"management_port"`
+			ReadTimeout    string `json:"read_timeout"`
+			WriteTimeout   string `json:"write_timeout"`
+			MaxConnections int    `json:"max_connections"`
+		} `json:"server"`
+		Defaults struct {
+			StatusCode    int  `json:"status_code"`
+			PreserveQuery bool `json:"preserve_query"`
+		} `json:"defaults"`
+		Stats struct {
+			Enabled      bool    `json:"enabled"`
+			BufferSize   int     `json:"buffer_size"`
+			SamplingRate float64 `json:"sampling_rate"`
+		} `json:"stats"`
+		Auth struct {
+			Enabled     bool     `json:"enabled"`
+			APIKeyCount int      `json:"api_key_count"`
+			JWTEnabled  bool     `json:"jwt_enabled"`
+			AllowIPs    []string `json:"allow_ips"`
+		} `json:"auth"`
+		Tracing struct {
+			Enabled      bool    `json:"enabled"`
+			Endpoint     string  `json:"endpoint"`
+			ServiceName  string  `json:"service_name"`
+			SamplingRate float64 `json:"sampling_rate"`
+		} `json:"tracing"`
+		RateLimit struct {
+			Enabled     bool    `json:"enabled"`
+			GlobalRPS   float64 `json:"global_rps"`
+			PerIPRPS    float64 `json:"per_ip_rps"`
+			PathLimits  int     `json:"path_limits_count"`
+		} `json:"rate_limit"`
+		RulesCount int `json:"rules_count"`
+	}
+
+	cfg := sanitizedConfig{}
+	cfg.Version = s.cfg.Version
+	cfg.Server.Port = s.cfg.Server.Port
+	cfg.Server.ManagementPort = s.cfg.Server.ManagementPort
+	cfg.Server.ReadTimeout = s.cfg.Server.ReadTimeout
+	cfg.Server.WriteTimeout = s.cfg.Server.WriteTimeout
+	cfg.Server.MaxConnections = s.cfg.Server.MaxConnections
+
+	cfg.Defaults.StatusCode = s.cfg.Defaults.StatusCode
+	cfg.Defaults.PreserveQuery = s.cfg.Defaults.PreserveQuery
+
+	if s.cfg.Stats != nil {
+		cfg.Stats.Enabled = s.cfg.Stats.Enabled
+		cfg.Stats.BufferSize = s.cfg.Stats.BufferSize
+		cfg.Stats.SamplingRate = s.cfg.Stats.SamplingRate
+	}
+
+	if s.cfg.Auth != nil {
+		cfg.Auth.Enabled = s.cfg.Auth.Enabled
+		cfg.Auth.APIKeyCount = len(s.cfg.Auth.APIKeys)
+		cfg.Auth.JWTEnabled = s.cfg.Auth.JWT != nil && s.cfg.Auth.JWT.Enabled
+		cfg.Auth.AllowIPs = s.cfg.Auth.AllowIPs
+	}
+
+	if s.cfg.Tracing != nil {
+		cfg.Tracing.Enabled = s.cfg.Tracing.Enabled
+		cfg.Tracing.Endpoint = s.cfg.Tracing.Endpoint
+		cfg.Tracing.ServiceName = s.cfg.Tracing.ServiceName
+		cfg.Tracing.SamplingRate = s.cfg.Tracing.SamplingRate
+	}
+
+	if s.cfg.RateLimit != nil {
+		cfg.RateLimit.Enabled = s.cfg.RateLimit.Enabled
+		cfg.RateLimit.GlobalRPS = s.cfg.RateLimit.GlobalRPS
+		cfg.RateLimit.PerIPRPS = s.cfg.RateLimit.PerIPRPS
+		cfg.RateLimit.PathLimits = len(s.cfg.RateLimit.PathLimits)
+	}
+
+	cfg.RulesCount = len(s.cfg.Rules)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
+	ctx.SetContentType("application/json")
+}
+
+func (s *Server) handleDebugRules(ctx *fasthttp.RequestCtx) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Return detailed rule information
+	type ruleInfo struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Path     string `json:"path,omitempty"`
+		Pattern  string `json:"pattern,omitempty"`
+		Host     string `json:"host,omitempty"`
+		To       string `json:"to,omitempty"`
+		Status   int    `json:"status"`
+		Priority int    `json:"priority"`
+	}
+
+	rules := make([]ruleInfo, len(s.cfg.Rules))
+	for i, r := range s.cfg.Rules {
+		rules[i] = ruleInfo{
+			ID:       r.ID,
+			Type:     string(r.Match.Type),
+			Path:     r.Match.Path,
+			Pattern:  r.Match.Pattern,
+			Host:     r.Match.Host,
+			To:       r.Redirect.To,
+			Status:   r.Redirect.Status,
+			Priority: r.Priority,
+		}
+	}
+
+	response := struct {
+		Count       int        `json:"count"`
+		RouterStats interface{} `json:"router_stats"`
+		Rules       []ruleInfo `json:"rules"`
+	}{
+		Count:       len(rules),
+		RouterStats: s.router.GetStats(),
+		Rules:       rules,
+	}
+
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
+		ctx.SetContentType("application/json")
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
+	ctx.SetContentType("application/json")
+}
+
+func (s *Server) handleDebugRuntime(ctx *fasthttp.RequestCtx) {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	response := struct {
+		Go struct {
+			Version    string `json:"version"`
+			NumCPU     int    `json:"num_cpu"`
+			GOMAXPROCS int    `json:"gomaxprocs"`
+			Goroutines int    `json:"goroutines"`
+		} `json:"go"`
+		Memory struct {
+			Alloc      uint64 `json:"alloc_bytes"`
+			TotalAlloc uint64 `json:"total_alloc_bytes"`
+			Sys        uint64 `json:"sys_bytes"`
+			HeapAlloc  uint64 `json:"heap_alloc_bytes"`
+			HeapSys    uint64 `json:"heap_sys_bytes"`
+			HeapIdle   uint64 `json:"heap_idle_bytes"`
+			HeapInuse  uint64 `json:"heap_inuse_bytes"`
+			StackInuse uint64 `json:"stack_inuse_bytes"`
+			NumGC      uint32 `json:"num_gc"`
+			LastGC     uint64 `json:"last_gc_ns"`
+		} `json:"memory"`
+		Uptime string `json:"uptime"`
+	}{}
+
+	response.Go.Version = runtime.Version()
+	response.Go.NumCPU = runtime.NumCPU()
+	response.Go.GOMAXPROCS = runtime.GOMAXPROCS(0)
+	response.Go.Goroutines = runtime.NumGoroutine()
+
+	response.Memory.Alloc = memStats.Alloc
+	response.Memory.TotalAlloc = memStats.TotalAlloc
+	response.Memory.Sys = memStats.Sys
+	response.Memory.HeapAlloc = memStats.HeapAlloc
+	response.Memory.HeapSys = memStats.HeapSys
+	response.Memory.HeapIdle = memStats.HeapIdle
+	response.Memory.HeapInuse = memStats.HeapInuse
+	response.Memory.StackInuse = memStats.StackInuse
+	response.Memory.NumGC = memStats.NumGC
+	response.Memory.LastGC = memStats.LastGC
+
+	// Calculate uptime (approximate based on process start)
+	response.Uptime = "N/A" // Would need to track start time
+
+	data, err := json.MarshalIndent(response, "", "  ")
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
