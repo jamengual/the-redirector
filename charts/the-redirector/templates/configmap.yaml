@@ -1,0 +1,96 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "the-redirector.fullname" . }}
+  labels:
+    {{- include "the-redirector.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Values.config.inline }}
+    {{- .Values.config.inline | nindent 4 }}
+    {{- else }}
+    server:
+      port: {{ .Values.config.server.port }}
+      managementPort: {{ .Values.config.server.managementPort }}
+      readTimeout: {{ .Values.config.server.readTimeout }}
+      writeTimeout: {{ .Values.config.server.writeTimeout }}
+      maxConnections: {{ .Values.config.server.maxConnections }}
+
+    defaults:
+      statusCode: {{ .Values.config.defaults.statusCode }}
+      preserveQuery: {{ .Values.config.defaults.preserveQuery }}
+
+    stats:
+      enabled: {{ .Values.config.stats.enabled }}
+      bufferSize: {{ .Values.config.stats.bufferSize }}
+      samplingRate: {{ .Values.config.stats.samplingRate }}
+
+    {{- if .Values.config.auth.enabled }}
+    auth:
+      enabled: true
+      {{- if .Values.config.auth.apiKeys }}
+      api_keys:
+        {{- toYaml .Values.config.auth.apiKeys | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.auth.jwt.enabled }}
+      jwt:
+        enabled: true
+        {{- with .Values.config.auth.jwt.secret }}
+        secret: {{ . }}
+        {{- end }}
+        {{- with .Values.config.auth.jwt.issuer }}
+        issuer: {{ . }}
+        {{- end }}
+        {{- with .Values.config.auth.jwt.audience }}
+        audience: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.config.auth.allowIPs }}
+      allow_ips:
+        {{- toYaml .Values.config.auth.allowIPs | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.config.tracing.enabled }}
+    tracing:
+      enabled: true
+      {{- with .Values.config.tracing.endpoint }}
+      endpoint: {{ . }}
+      {{- end }}
+      {{- with .Values.config.tracing.serviceName }}
+      service_name: {{ . }}
+      {{- end }}
+      {{- with .Values.config.tracing.environment }}
+      environment: {{ . }}
+      {{- end }}
+      sampling_rate: {{ .Values.config.tracing.samplingRate }}
+      insecure: {{ .Values.config.tracing.insecure }}
+    {{- end }}
+
+    {{- if .Values.config.rateLimit.enabled }}
+    rate_limit:
+      enabled: true
+      global_rps: {{ .Values.config.rateLimit.globalRPS }}
+      global_burst: {{ .Values.config.rateLimit.globalBurst }}
+      per_ip_rps: {{ .Values.config.rateLimit.perIPRPS }}
+      per_ip_burst: {{ .Values.config.rateLimit.perIPBurst }}
+      trust_proxy: {{ .Values.config.rateLimit.trustProxy }}
+      {{- if .Values.config.rateLimit.exemptIPs }}
+      exempt_ips:
+        {{- toYaml .Values.config.rateLimit.exemptIPs | nindent 8 }}
+      {{- end }}
+      {{- if .Values.config.rateLimit.pathLimits }}
+      path_limits:
+        {{- toYaml .Values.config.rateLimit.pathLimits | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.config.rules }}
+    rules:
+      {{- toYaml .Values.config.rules | nindent 6 }}
+    {{- else }}
+    rules: []
+    {{- end }}
+    {{- end }}
+{{- end }}

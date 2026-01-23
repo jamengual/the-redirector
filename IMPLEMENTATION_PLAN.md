@@ -323,15 +323,15 @@ Choose between `net/http` and `fasthttp`:
 
 ### Stage 4.3: Config-Syncer Service
 **Goal**: Standalone service that coordinates config sources and pushes to redirectors
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
-- [ ] Create config-syncer binary in cmd/config-syncer/
-- [ ] Multi-source aggregation and merging
-- [ ] Push config to multiple redirector targets
-- [ ] Health checks for sources and targets
-- [ ] Webhook HTTP server for GitHub/GitLab events
-- [ ] Retry logic with exponential backoff
+- [x] Create config-syncer binary in cmd/config-syncer/
+- [x] Multi-source aggregation and merging
+- [x] Push config to multiple redirector targets
+- [x] Health checks for sources and targets
+- [x] Webhook HTTP server for GitHub/GitLab events
+- [x] Retry logic with exponential backoff
 
 **Tests**:
 - Syncer fetches from multiple sources
@@ -422,14 +422,14 @@ Choose between `net/http` and `fasthttp`:
 
 ### Stage 5.5: Configuration Versioning
 **Goal**: Track and audit configuration changes
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
-- [ ] Version tracking for each config load
-- [ ] Config diff on reload
-- [ ] Audit log of changes
-- [ ] Rollback to previous version
-- [ ] Config history retention
+- [x] Version tracking for each config load
+- [x] Config diff on reload
+- [x] Audit log of changes
+- [x] Rollback to previous version
+- [x] Config history retention
 
 **Tests**:
 - Versions increment on change
@@ -445,7 +445,7 @@ Choose between `net/http` and `fasthttp`:
 
 ### Stage 6.1: Prometheus Metrics
 **Goal**: Comprehensive metrics
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
 - [ ] Request metrics:
@@ -490,13 +490,13 @@ Choose between `net/http` and `fasthttp`:
 
 ### Stage 6.3: Distributed Tracing
 **Goal**: Request tracing support
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
-- [ ] OpenTelemetry integration
-- [ ] Trace context propagation
-- [ ] Span creation for key operations
-- [ ] Export to Jaeger/Zipkin/OTLP
+- [x] OpenTelemetry integration
+- [x] Trace context propagation
+- [x] Span creation for key operations
+- [x] Export to Jaeger/Zipkin/OTLP
 
 **Tests**:
 - Traces exported correctly
@@ -604,23 +604,23 @@ Choose between `net/http` and `fasthttp`:
 
 ### Stage 8.2: Access Control
 **Goal**: Fine-grained permissions
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
-- [ ] API authentication (JWT, API keys)
-- [ ] Role-based access control
-- [ ] Audit logging for all changes
-- [ ] IP allowlisting for management API
+- [x] API authentication (JWT, API keys)
+- [x] Role-based access control
+- [x] Audit logging for all changes
+- [x] IP allowlisting for management API
 
 ### Stage 8.3: Rate Limiting
 **Goal**: Protect against abuse
-**Status**: Not Started
+**Status**: Complete
 
 **Tasks**:
-- [ ] Per-path rate limits
-- [ ] Per-IP rate limits
-- [ ] Configurable limits in rules
-- [ ] Rate limit headers (X-RateLimit-*)
+- [x] Per-path rate limits
+- [x] Per-IP rate limits
+- [x] Configurable limits in rules
+- [x] Rate limit headers (X-RateLimit-*)
 
 ### Stage 8.4: Admin Dashboard (Optional)
 **Goal**: Visual management interface

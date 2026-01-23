@@ -51,7 +51,7 @@ FROM alpine:3.19
 # Labels for container registry
 LABEL org.opencontainers.image.title="The Redirector"
 LABEL org.opencontainers.image.description="High-performance URL redirect and response service"
-LABEL org.opencontainers.image.source="https://github.com/your-org/the-redirector"
+LABEL org.opencontainers.image.source="https://github.com/jamengual/the-redirector"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install runtime dependencies

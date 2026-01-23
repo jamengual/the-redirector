@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/your-org/the-redirector/internal/config"
-	"github.com/your-org/the-redirector/internal/lint"
+	"github.com/jamengual/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/lint"
 )
 
 // ANSI color codes

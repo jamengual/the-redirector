@@ -3,7 +3,7 @@ package lint
 import (
 	"testing"
 
-	"github.com/your-org/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 func boolPtr(b bool) *bool { return &b }

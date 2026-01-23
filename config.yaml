@@ -25,6 +25,75 @@ stats:
   buffer_size: 1000          # Ring buffer size for live view
   sampling_rate: 1.0         # 1.0 = all requests, 0.01 = 1%
 
+# OpenTelemetry tracing (disabled by default)
+# Uncomment to enable distributed tracing
+#
+# tracing:
+#   enabled: true
+#   endpoint: "localhost:4317"          # OTLP gRPC endpoint (Jaeger, Tempo, etc.)
+#   service_name: "the-redirector"      # Service name in traces
+#   environment: "production"           # Environment tag
+#   sampling_rate: 1.0                  # 1.0 = all requests, 0.1 = 10%
+#   insecure: true                      # Use insecure connection (no TLS)
+
+# Rate limiting (disabled by default)
+# Protects against abuse with per-IP and global limits
+#
+# rate_limit:
+#   enabled: true
+#   global_rps: 10000                   # Global requests per second
+#   global_burst: 20000                 # Global burst size
+#   per_ip_rps: 100                     # Per-IP requests per second
+#   per_ip_burst: 200                   # Per-IP burst size
+#   trust_proxy: false                  # Trust X-Forwarded-For header
+#   exempt_ips:                         # IPs that bypass rate limiting
+#     - "10.0.0.0/8"                    # Internal network
+#   path_limits:                        # Path-specific limits
+#     - path: "/api/expensive"          # Exact path
+#       rps: 10
+#       burst: 20
+#     - path: "/api/*"                  # Prefix (with wildcard)
+#       rps: 50
+#       burst: 100
+
+# Management API authentication (disabled by default)
+# Uncomment to enable authentication for /api/v1/*, /stats/* endpoints
+# Note: /health, /ready, /metrics are always public
+#
+# auth:
+#   enabled: true
+#
+#   # API Keys - recommended for service-to-service auth
+#   api_keys:
+#     - name: admin-key
+#       key: ${ADMIN_API_KEY}              # Use env var for security
+#       permissions: [admin]               # Full access
+#
+#     - name: deploy-key
+#       key: ${DEPLOY_API_KEY}
+#       permissions: [reload, read]        # Can reload config and read
+#
+#     - name: monitor-key
+#       key: ${MONITOR_API_KEY}
+#       permissions: [stats:read, read]    # Read-only access
+#
+#   # JWT authentication - for user/service tokens
+#   jwt:
+#     enabled: true
+#     secret: ${JWT_SECRET}                # HMAC secret (HS256)
+#     # public_key: |                      # Or RSA/ECDSA public key (RS256, ES256)
+#     #   -----BEGIN PUBLIC KEY-----
+#     #   ...
+#     #   -----END PUBLIC KEY-----
+#     issuer: "your-auth-service"          # Optional: validate iss claim
+#     audience: "the-redirector"           # Optional: validate aud claim
+#
+#   # IP allowlist - SECURITY WARNING: IPs listed here bypass ALL authentication!
+#   # Only use this for trusted internal services that cannot provide credentials.
+#   # Default: empty (disabled) - this is the secure default.
+#   # allow_ips:
+#   #   - "10.0.0.5"                       # Specific monitoring server only
+
 # Redirect rules (evaluated in order of specificity)
 rules:
   # ===========================================

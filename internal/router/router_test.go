@@ -3,7 +3,7 @@ package router
 import (
 	"testing"
 
-	"github.com/your-org/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 func TestRouter_ExactMatch(t *testing.T) {

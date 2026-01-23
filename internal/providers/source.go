@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/your-org/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 // Source defines the interface for configuration sources.
