@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+bin/
+dist/
+
+# Test files
+test/
+*_test.go
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Development files
+.env*
+*.local.*
+Makefile
+
+# Load test results
+test/load/results/
+
+# Scripts
+scripts/
+
+# Plugin files
+.claude/
+.claude-flow/
+.hive-mind/

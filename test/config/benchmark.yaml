@@ -1,0 +1,197 @@
+# Benchmark configuration with various rule types
+# Used for load testing to measure performance across match types
+
+version: "1.0"
+
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout: 5s
+  write_timeout: 5s
+  max_connections: 100000
+
+defaults:
+  status_code: 301
+  preserve_query: true
+
+# Disable stats for pure performance testing
+stats:
+  enabled: false
+
+rules:
+  # ============================================
+  # EXACT MATCHES (fastest - O(1) hash lookup)
+  # ============================================
+  - id: exact-1
+    match:
+      type: exact
+      path: /exact/path/one
+    redirect:
+      to: https://example.com/one
+
+  - id: exact-2
+    match:
+      type: exact
+      path: /exact/path/two
+    redirect:
+      to: https://example.com/two
+
+  - id: exact-3
+    match:
+      type: exact
+      path: /exact/path/three
+    redirect:
+      to: https://example.com/three
+
+  - id: exact-4
+    match:
+      type: exact
+      path: /api/v1/users
+    redirect:
+      to: https://api.example.com/v2/users
+
+  - id: exact-5
+    match:
+      type: exact
+      path: /api/v1/products
+    redirect:
+      to: https://api.example.com/v2/products
+
+  # ============================================
+  # PREFIX MATCHES (fast - sorted by length)
+  # ============================================
+  - id: prefix-1
+    match:
+      type: prefix
+      path: /blog/
+    redirect:
+      to: https://blog.example.com/
+      preserve_path: true
+
+  - id: prefix-2
+    match:
+      type: prefix
+      path: /docs/v1/
+    redirect:
+      to: https://docs.example.com/v1/
+      preserve_path: true
+
+  - id: prefix-3
+    match:
+      type: prefix
+      path: /docs/v2/
+    redirect:
+      to: https://docs.example.com/v2/
+      preserve_path: true
+
+  - id: prefix-4
+    match:
+      type: prefix
+      path: /api/legacy/
+    redirect:
+      to: https://api.example.com/v2/
+      preserve_path: true
+
+  - id: prefix-5
+    match:
+      type: prefix
+      path: /old-site/
+    redirect:
+      to: https://new.example.com/
+      preserve_path: true
+
+  # ============================================
+  # REGEX MATCHES (slower - pattern matching)
+  # ============================================
+  - id: regex-1
+    match:
+      type: regex
+      pattern: ^/product/(\d+)$
+    redirect:
+      to: https://shop.example.com/item/$1
+
+  - id: regex-2
+    match:
+      type: regex
+      pattern: ^/user/([a-z0-9_-]+)/profile$
+    redirect:
+      to: https://profiles.example.com/$1
+
+  - id: regex-3
+    match:
+      type: regex
+      pattern: ^/category/([^/]+)/item/(\d+)$
+    redirect:
+      to: https://shop.example.com/$1/$2
+
+  - id: regex-4
+    match:
+      type: regex
+      pattern: ^/article/(\d{4})/(\d{2})/(.+)$
+    redirect:
+      to: https://archive.example.com/$1-$2/$3
+
+  - id: regex-5
+    match:
+      type: regex
+      pattern: ^/download/([a-f0-9]{32})$
+    redirect:
+      to: https://cdn.example.com/files/$1
+
+  # ============================================
+  # GLOB MATCHES (converted to regex)
+  # ============================================
+  - id: glob-1
+    match:
+      type: glob
+      pattern: /assets/**
+    redirect:
+      to: https://cdn.example.com/
+      preserve_path: true
+
+  - id: glob-2
+    match:
+      type: glob
+      pattern: /images/*.jpg
+    redirect:
+      to: https://images.example.com/
+      preserve_path: true
+
+  - id: glob-3
+    match:
+      type: glob
+      pattern: /static/*/bundle.js
+    redirect:
+      to: https://cdn.example.com/js/
+      preserve_path: true
+
+  # ============================================
+  # NON-REDIRECT RESPONSES (for blocking)
+  # ============================================
+  - id: block-wp
+    match:
+      type: prefix
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+
+  - id: block-env
+    match:
+      type: exact
+      path: /.env
+    redirect:
+      status: 403
+      body: "Forbidden"
+
+  # ============================================
+  # FALLBACK (lowest priority)
+  # ============================================
+  - id: fallback
+    match:
+      type: glob
+      pattern: /**
+    redirect:
+      to: https://example.com/not-found
+      status: 302
+    priority: -100

@@ -1,0 +1,240 @@
+# The Redirector - Sample Configuration
+# This file demonstrates various redirect rule types and options.
+
+version: "1.0"
+
+# Server configuration
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout: 5s
+  write_timeout: 5s
+  idle_timeout: 120s
+  max_connections: 100000
+
+# Default settings for all redirects
+defaults:
+  status_code: 301
+  preserve_query: true
+  headers:
+    X-Powered-By: "the-redirector"
+
+# Statistics collection (disabled by default for performance)
+stats:
+  enabled: true              # Enable stats collection
+  buffer_size: 1000          # Ring buffer size for live view
+  sampling_rate: 1.0         # 1.0 = all requests, 0.01 = 1%
+
+# Redirect rules (evaluated in order of specificity)
+rules:
+  # ===========================================
+  # EXACT MATCH EXAMPLES
+  # ===========================================
+
+  # Simple exact path redirect
+  - id: homepage-redirect
+    match:
+      type: exact
+      path: /old-home
+    redirect:
+      to: https://example.com/
+      status: 301
+
+  # Exact match with custom headers
+  - id: api-moved
+    match:
+      type: exact
+      path: /api/v1/legacy
+    redirect:
+      to: https://api.example.com/v2/
+      status: 301
+      headers:
+        X-API-Version: "2.0"
+        X-Deprecation-Notice: "v1 is deprecated"
+
+  # ===========================================
+  # PREFIX MATCH EXAMPLES
+  # ===========================================
+
+  # Prefix match with path preservation
+  # /blog/hello-world -> https://blog.example.com/hello-world
+  - id: blog-redirect
+    match:
+      type: prefix
+      path: /blog/
+    redirect:
+      to: https://blog.example.com/
+      preserve_path: true
+      status: 301
+
+  # Prefix match for API versioning
+  # /api/v1/users -> https://api.example.com/v2/users
+  - id: api-v1-redirect
+    match:
+      type: prefix
+      path: /api/v1/
+    redirect:
+      to: https://api.example.com/v2/
+      preserve_path: true
+      status: 307  # Preserve HTTP method
+
+  # ===========================================
+  # REGEX MATCH EXAMPLES
+  # ===========================================
+
+  # Capture product ID and redirect
+  # /product/12345 -> https://shop.example.com/item/12345
+  - id: product-redirect
+    match:
+      type: regex
+      pattern: ^/product/(\d+)$
+    redirect:
+      to: https://shop.example.com/item/$1
+      status: 302
+
+  # Capture username from profile URL
+  # /user/johndoe/profile -> https://profiles.example.com/johndoe
+  - id: profile-redirect
+    match:
+      type: regex
+      pattern: ^/user/([a-z0-9_-]+)/profile$
+    redirect:
+      to: https://profiles.example.com/$1
+      status: 301
+
+  # Category and item redirect with multiple captures
+  # /category/electronics/item/42 -> https://shop.example.com/electronics/42
+  - id: category-item-redirect
+    match:
+      type: regex
+      pattern: ^/category/([^/]+)/item/(\d+)$
+    redirect:
+      to: https://shop.example.com/$1/$2
+      status: 301
+
+  # ===========================================
+  # GLOB MATCH EXAMPLES
+  # ===========================================
+
+  # Single wildcard - match one path segment
+  # /docs/v1/guide -> https://docs.example.com/v1/guide
+  # /docs/v2/guide -> https://docs.example.com/v2/guide
+  - id: docs-version-redirect
+    match:
+      type: glob
+      pattern: /docs/*/guide
+    redirect:
+      to: https://docs.example.com/
+      preserve_path: true
+
+  # Double wildcard - match any depth
+  # /legacy/a/b/c/d -> https://new.example.com/a/b/c/d
+  - id: legacy-catch-all
+    match:
+      type: glob
+      pattern: /legacy/**
+    redirect:
+      to: https://new.example.com/
+      preserve_path: true
+
+  # ===========================================
+  # HOST-BASED REDIRECTS
+  # ===========================================
+
+  # Redirect entire old domain
+  - id: old-domain-redirect
+    match:
+      type: prefix
+      host: old.example.com
+      path: /
+    redirect:
+      to: https://new.example.com/
+      preserve_path: true
+
+  # ===========================================
+  # ENVIRONMENT VARIABLE EXAMPLE
+  # ===========================================
+
+  # Use environment variable for destination
+  # Set API_GATEWAY_URL in environment to customize
+  - id: api-gateway
+    match:
+      type: prefix
+      path: /gateway/
+    redirect:
+      to: ${API_GATEWAY_URL:-https://gateway.example.com}/
+      preserve_path: true
+
+  # ===========================================
+  # TEMPORARY REDIRECTS (A/B Testing, Maintenance)
+  # ===========================================
+
+  # Temporary redirect for A/B testing
+  - id: ab-test-landing
+    match:
+      type: exact
+      path: /landing
+    redirect:
+      to: https://example.com/landing-variant-b
+      status: 302  # Temporary - browsers won't cache
+      headers:
+        X-AB-Test: "variant-b"
+
+  # ===========================================
+  # NON-REDIRECT RESPONSES (Block bots, maintenance, etc.)
+  # ===========================================
+
+  # Block WordPress admin attempts with 404
+  - id: block-wp-admin
+    match:
+      type: prefix
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+
+  # Block common bot paths with 403
+  - id: block-bots
+    match:
+      type: regex
+      pattern: ^/(\.env|\.git|phpinfo|wp-login)
+    redirect:
+      status: 403
+      body: "Forbidden"
+      headers:
+        X-Blocked: "true"
+
+  # Maintenance mode example (uncomment to enable)
+  # - id: maintenance
+  #   match:
+  #     type: glob
+  #     pattern: /api/**
+  #   redirect:
+  #     status: 503
+  #     body: "Service temporarily unavailable"
+  #     headers:
+  #       Retry-After: "3600"
+  #   priority: 1000  # High priority overrides other rules
+
+  # Gone - permanently removed content
+  - id: discontinued
+    match:
+      type: exact
+      path: /old-product
+    redirect:
+      status: 410
+      body: "This product has been discontinued"
+
+  # ===========================================
+  # FALLBACK / CATCH-ALL
+  # ===========================================
+
+  # Catch-all for any unmatched paths (lowest priority)
+  - id: fallback
+    match:
+      type: glob
+      pattern: /**
+    redirect:
+      to: https://example.com/not-found
+      status: 302
+    priority: -100  # Lowest priority, evaluated last
