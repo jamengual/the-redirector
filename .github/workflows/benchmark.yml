@@ -1,0 +1,340 @@
+name: Performance Benchmark
+
+on:
+  # Manual trigger with options
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Test scenario to run'
+        required: true
+        default: 'smoke'
+        type: choice
+        options:
+          - smoke
+          - load
+          - stress
+          - spike
+          - all
+      resource_profile:
+        description: 'Resource profile (CPU/Memory limits)'
+        required: true
+        default: 'medium'
+        type: choice
+        options:
+          - minimal
+          - low
+          - medium
+          - high
+
+  # Run on PRs that touch performance-critical code
+  pull_request:
+    paths:
+      - 'internal/router/**'
+      - 'internal/server/**'
+      - 'cmd/redirector/**'
+      - 'test/load/**'
+
+  # Weekly scheduled benchmark for tracking regressions
+  schedule:
+    - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
+
+env:
+  GO_VERSION: '1.21'
+  K6_VERSION: 'v0.49.0'
+
+jobs:
+  # Quick smoke test for PRs
+  smoke-test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://github.com/grafana/k6/releases/download/${{ env.K6_VERSION }}/k6-${{ env.K6_VERSION }}-linux-amd64.tar.gz | tar xzf -
+          sudo mv k6-${{ env.K6_VERSION }}-linux-amd64/k6 /usr/local/bin/
+
+      - name: Build redirector
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/redirector ./cmd/redirector
+
+      - name: Start redirector
+        run: |
+          ./bin/redirector -config test/config/benchmark.yaml -log-level warn &
+          sleep 3
+          curl -sf http://localhost:8081/health
+
+      - name: Run smoke test
+        run: |
+          k6 run \
+            --env BASE_URL=http://localhost:8080 \
+            test/load/basic.js
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-results
+          path: test/load/results/
+
+  # Full benchmark suite (manual or scheduled)
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Different resource configurations
+          - name: minimal
+            cpus: '0.5'
+            memory: '64m'
+          - name: low
+            cpus: '1'
+            memory: '128m'
+          - name: medium
+            cpus: '2'
+            memory: '256m'
+          - name: high
+            cpus: '4'
+            memory: '512m'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://github.com/grafana/k6/releases/download/${{ env.K6_VERSION }}/k6-${{ env.K6_VERSION }}-linux-amd64.tar.gz | tar xzf -
+          sudo mv k6-${{ env.K6_VERSION }}-linux-amd64/k6 /usr/local/bin/
+
+      - name: Build redirector
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/redirector ./cmd/redirector
+
+      - name: Check if profile should run
+        id: should-run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PROFILE: ${{ github.event.inputs.resource_profile }}
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          # For workflow_dispatch, only run the selected profile
+          # For schedule, run all profiles
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            if [ "$INPUT_PROFILE" == "$MATRIX_NAME" ]; then
+              echo "run=true" >> $GITHUB_OUTPUT
+            else
+              echo "run=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Start redirector with resource limits
+        if: steps.should-run.outputs.run == 'true'
+        env:
+          CPUS: ${{ matrix.cpus }}
+          MEMORY: ${{ matrix.memory }}
+        run: |
+          # Create results directory
+          mkdir -p test/load/results
+
+          # Run in Docker with resource limits
+          docker run -d \
+            --name redirector-bench \
+            --cpus="$CPUS" \
+            --memory="$MEMORY" \
+            -p 8080:8080 \
+            -p 8081:8081 \
+            -v "$(pwd)/test/config/benchmark.yaml:/etc/redirector/config.yaml:ro" \
+            -v "$(pwd)/bin/redirector:/usr/local/bin/redirector:ro" \
+            --entrypoint /usr/local/bin/redirector \
+            alpine:latest \
+            -config /etc/redirector/config.yaml -log-level warn
+
+          # Wait for server
+          for i in {1..30}; do
+            if curl -sf http://localhost:8081/health > /dev/null 2>&1; then
+              echo "Server ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Determine scenarios to run
+        if: steps.should-run.outputs.run == 'true'
+        id: scenarios
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SCENARIO: ${{ github.event.inputs.scenario }}
+        run: |
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            if [ "$INPUT_SCENARIO" == "all" ]; then
+              echo "scenarios=smoke load stress" >> $GITHUB_OUTPUT
+            else
+              echo "scenarios=$INPUT_SCENARIO" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Scheduled run: run smoke, load, and stress
+            echo "scenarios=smoke load stress" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run k6 benchmarks
+        if: steps.should-run.outputs.run == 'true'
+        env:
+          SCENARIOS: ${{ steps.scenarios.outputs.scenarios }}
+          PROFILE_NAME: ${{ matrix.name }}
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+          for scenario in $SCENARIOS; do
+            echo "━━━ Running scenario: $scenario ━━━"
+
+            k6 run \
+              --out json="test/load/results/${scenario}_${PROFILE_NAME}_${TIMESTAMP}.json" \
+              --env BASE_URL=http://localhost:8080 \
+              --env SCENARIO="$scenario" \
+              --tag profile="$PROFILE_NAME" \
+              --tag scenario="$scenario" \
+              test/load/scenarios.js \
+              2>&1 | tee "test/load/results/${scenario}_${PROFILE_NAME}_${TIMESTAMP}.log" || true
+
+            echo ""
+          done
+
+      - name: Generate summary
+        if: steps.should-run.outputs.run == 'true'
+        env:
+          PROFILE_NAME: ${{ matrix.name }}
+          CPUS: ${{ matrix.cpus }}
+          MEMORY: ${{ matrix.memory }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          cat > "test/load/results/summary_${PROFILE_NAME}.md" << EOF
+          # Performance Summary: ${PROFILE_NAME}
+
+          Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: ${COMMIT_SHA}
+
+          ## Resource Configuration
+          - CPU Limit: ${CPUS} cores
+          - Memory Limit: ${MEMORY}
+
+          ## Results
+
+          See attached log files for detailed metrics.
+          EOF
+
+      - name: Stop redirector
+        if: always() && steps.should-run.outputs.run == 'true'
+        run: docker rm -f redirector-bench || true
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: steps.should-run.outputs.run == 'true'
+        with:
+          name: benchmark-${{ matrix.name }}
+          path: test/load/results/
+
+  # Aggregate results from all profiles
+  aggregate-results:
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.scenario == 'all') || github.event_name == 'schedule'
+    needs: benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: results/
+          pattern: benchmark-*
+
+      - name: Generate comparison report
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p comparison
+
+          cat > comparison/BENCHMARK_REPORT.md << EOF
+          # The Redirector - Performance Benchmark Report
+
+          Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: ${COMMIT_SHA}
+
+          ## Resource Profiles Tested
+
+          | Profile | CPU Limit | Memory Limit |
+          |---------|-----------|--------------|
+          | minimal | 0.5 cores | 64 MB |
+          | low | 1 core | 128 MB |
+          | medium | 2 cores | 256 MB |
+          | high | 4 cores | 512 MB |
+
+          ## Performance Summary
+
+          See individual profile results in the artifacts.
+
+          ## Key Observations
+
+          _Add analysis here after reviewing results_
+
+          EOF
+
+      - name: Upload comparison report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: comparison/
+
+  # Comment on PR with results
+  comment-pr:
+    if: github.event_name == 'pull_request'
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-test-results
+          path: results/
+
+      - name: Create PR comment
+        uses: actions/github-script@v7
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const commitSha = process.env.COMMIT_SHA;
+
+            let comment = `## 🚀 Performance Smoke Test Results\n\n`;
+            comment += `**Commit:** \`${commitSha}\`\n\n`;
+            comment += `The smoke test ran successfully. `;
+            comment += `For detailed benchmarks, trigger the workflow manually with different profiles.\n\n`;
+            comment += `<details>\n<summary>How to run full benchmarks</summary>\n\n`;
+            comment += `1. Go to Actions → Performance Benchmark\n`;
+            comment += `2. Click "Run workflow"\n`;
+            comment += `3. Select scenario and resource profile\n`;
+            comment += `</details>`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

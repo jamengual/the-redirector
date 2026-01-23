@@ -1,0 +1,87 @@
+# Config Syncer Configuration
+# This service pulls config from multiple sources and pushes to the redirector.
+
+# How often to check for updates
+sync_interval: 5m
+
+# Logging
+log_level: info   # debug, info, warn, error
+log_format: console
+
+# Configuration sources (tried in priority order, highest first)
+sources:
+  # Primary: S3 bucket
+  - name: "s3-primary"
+    type: s3
+    priority: 100
+    enabled: true
+    s3:
+      bucket: "${CONFIG_S3_BUCKET:-my-redirector-config}"
+      key: "config/redirector.yaml"
+      region: "${AWS_REGION:-us-east-1}"
+      # Optional: Use IAM role for cross-account access
+      # role_arn: "arn:aws:iam::123456789:role/config-reader"
+
+  # Fallback: Azure Blob Storage
+  - name: "azure-fallback"
+    type: azure
+    priority: 50
+    enabled: false  # Enable if using Azure as backup
+    azure:
+      account_name: "${AZURE_STORAGE_ACCOUNT:-mystorageaccount}"
+      container_name: "config"
+      blob_name: "redirector.yaml"
+      use_managed_identity: true
+
+  # GitHub Repository (for GitOps workflow)
+  - name: "github-config"
+    type: github
+    priority: 75
+    enabled: false  # Enable if using GitHub as config source
+    github:
+      owner: "your-org"
+      repo: "redirector-config"
+      path: "production/config.yaml"
+      strategy: release  # Use latest release
+      # GitHub App auth (recommended)
+      app_id: ${GITHUB_APP_ID:-0}
+      installation_id: ${GITHUB_INSTALLATION_ID:-0}
+      private_key_path: "/etc/redirector/github-app.pem"
+      # Alternative: PAT (less secure)
+      # token: "${GITHUB_TOKEN}"
+
+  # HTTP endpoint (for custom config servers)
+  - name: "http-config"
+    type: http
+    priority: 25
+    enabled: false
+    http:
+      url: "https://config-server.internal/v1/redirector/config"
+      timeout: 30s
+      headers:
+        X-Config-Version: "v1"
+      # bearer_token: "${CONFIG_SERVER_TOKEN}"
+
+  # Local file (lowest priority fallback)
+  - name: "local-fallback"
+    type: file
+    priority: 1
+    enabled: true
+    file:
+      path: "/etc/redirector/config.yaml"
+
+# Where to write the fetched config
+output:
+  type: file  # file, api, or both
+
+  file:
+    path: "/var/lib/redirector/config.yaml"
+    mode: 0644
+    atomic: true  # Use atomic write (tmp + rename)
+
+  # API output (push directly to redirector)
+  # api:
+  #   url: "http://localhost:8081/api/v1/config/reload"
+  #   timeout: 10s
+  #   headers:
+  #     Authorization: "Bearer ${MANAGEMENT_TOKEN}"
