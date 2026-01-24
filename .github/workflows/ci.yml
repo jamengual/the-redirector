@@ -7,8 +7,7 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.24'
-  GOTOOLCHAIN: local
+  GO_VERSION: '1.25'
 
 jobs:
   lint:
@@ -22,16 +21,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Sync go.mod with CI Go version
-        run: |
-          # Force go.mod to use CI Go version to avoid golangci-lint version mismatch
-          sed -i 's/^go 1\.[0-9]*\(\.[0-9]*\)\?$/go 1.24/' go.mod
-          go mod tidy
+      - name: Download dependencies
+        run: go mod download
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.8.0
           args: --timeout=5m
 
   test:
@@ -45,11 +41,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Sync go.mod with CI Go version
-        run: |
-          # Force go.mod to use CI Go version to avoid golangci-lint version mismatch
-          sed -i 's/^go 1\.[0-9]*\(\.[0-9]*\)\?$/go 1.24/' go.mod
-          go mod tidy
+      - name: Download dependencies
+        run: go mod download
 
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
