@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 env:
-  GO_VERSION: '1.21'
+  GO_VERSION: '1.25'
   REGISTRY: ghcr.io
 
 jobs:
@@ -96,7 +96,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: the-redirector-*.tar.gz the-redirector-*.zip
+          path: |
+            the-redirector-*.tar.gz
+            the-redirector-*.zip
           if-no-files-found: error
 
   # Create GitHub Release
