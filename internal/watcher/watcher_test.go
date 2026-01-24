@@ -66,19 +66,19 @@ func TestWatcher_FileChange(t *testing.T) {
 
 	// Create initial config file
 	configFile := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(configFile, []byte("version: 1"), 0644); err != nil {
-		t.Fatalf("Failed to write config: %v", err)
+	if writeErr := os.WriteFile(configFile, []byte("version: 1"), 0644); writeErr != nil {
+		t.Fatalf("Failed to write config: %v", writeErr)
 	}
 
 	var reloadCount int32
-	var lastPath string
+	var lastPath atomic.Value
 
 	w, err := New(Config{
 		Paths:    []string{tmpDir},
 		Debounce: 50 * time.Millisecond,
 		ReloadFunc: func(path string) error {
 			atomic.AddInt32(&reloadCount, 1)
-			lastPath = path
+			lastPath.Store(path)
 			return nil
 		},
 	})
@@ -108,8 +108,8 @@ func TestWatcher_FileChange(t *testing.T) {
 	if atomic.LoadInt32(&reloadCount) == 0 {
 		t.Error("ReloadFunc was not called after file change")
 	}
-	if lastPath != tmpDir {
-		t.Errorf("Expected path %s, got %s", tmpDir, lastPath)
+	if got := lastPath.Load(); got != tmpDir {
+		t.Errorf("Expected path %s, got %v", tmpDir, got)
 	}
 }
 
@@ -121,8 +121,8 @@ func TestWatcher_Debounce(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	configFile := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(configFile, []byte("version: 1"), 0644); err != nil {
-		t.Fatalf("Failed to write config: %v", err)
+	if writeErr := os.WriteFile(configFile, []byte("version: 1"), 0644); writeErr != nil {
+		t.Fatalf("Failed to write config: %v", writeErr)
 	}
 
 	var reloadCount int32
@@ -176,8 +176,8 @@ func TestWatcher_IgnoreNonYAML(t *testing.T) {
 
 	// Create YAML file for initial watch
 	yamlFile := filepath.Join(tmpDir, "config.yaml")
-	if err := os.WriteFile(yamlFile, []byte("version: 1"), 0644); err != nil {
-		t.Fatalf("Failed to write yaml: %v", err)
+	if writeErr := os.WriteFile(yamlFile, []byte("version: 1"), 0644); writeErr != nil {
+		t.Fatalf("Failed to write yaml: %v", writeErr)
 	}
 
 	var reloadCount int32

@@ -183,11 +183,11 @@ func (a *AuditLog) Query(filter AuditFilter) []*AuditEvent {
 
 // AuditFilter specifies criteria for querying audit events.
 type AuditFilter struct {
-	Type   AuditEventType
-	Actor  string
-	Since  time.Time
-	Until  time.Time
-	Limit  int
+	Type  AuditEventType
+	Actor string
+	Since time.Time
+	Until time.Time
+	Limit int
 }
 
 // Count returns the total number of stored events.

@@ -17,8 +17,8 @@ type Config struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// Global rate limit (requests per second across all clients)
-	GlobalRPS float64 `yaml:"global_rps" json:"global_rps"`
-	GlobalBurst int   `yaml:"global_burst" json:"global_burst"`
+	GlobalRPS   float64 `yaml:"global_rps" json:"global_rps"`
+	GlobalBurst int     `yaml:"global_burst" json:"global_burst"`
 
 	// Per-IP rate limit
 	PerIPRPS   float64 `yaml:"per_ip_rps" json:"per_ip_rps"`
@@ -42,7 +42,7 @@ type Config struct {
 
 // PathLimit configures rate limiting for a specific path.
 type PathLimit struct {
-	Path  string  `yaml:"path" json:"path"`   // Exact path or prefix (with *)
+	Path  string  `yaml:"path" json:"path"` // Exact path or prefix (with *)
 	RPS   float64 `yaml:"rps" json:"rps"`
 	Burst int     `yaml:"burst" json:"burst"`
 }

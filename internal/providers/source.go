@@ -35,7 +35,7 @@ type Source interface {
 	Fetch(ctx context.Context) (*config.Config, error)
 
 	// Watch returns a channel that emits new configurations when changes
-	// are detected. The channel should be closed when the context is cancelled.
+	// are detected. The channel should be closed when the context is canceled.
 	// Return nil if the source doesn't support watching (use polling instead).
 	Watch(ctx context.Context) (<-chan *config.Config, error)
 

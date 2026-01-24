@@ -23,11 +23,11 @@ const (
 // Config holds tracing configuration.
 type Config struct {
 	Enabled      bool    `yaml:"enabled"`
-	Endpoint     string  `yaml:"endpoint"`       // OTLP endpoint (e.g., "localhost:4317")
-	ServiceName  string  `yaml:"service_name"`   // Service name (default: "the-redirector")
-	Environment  string  `yaml:"environment"`    // Deployment environment
-	SamplingRate float64 `yaml:"sampling_rate"`  // Sampling rate (0.0-1.0, default: 1.0)
-	Insecure     bool    `yaml:"insecure"`       // Use insecure connection (no TLS)
+	Endpoint     string  `yaml:"endpoint"`      // OTLP endpoint (e.g., "localhost:4317")
+	ServiceName  string  `yaml:"service_name"`  // Service name (default: "the-redirector")
+	Environment  string  `yaml:"environment"`   // Deployment environment
+	SamplingRate float64 `yaml:"sampling_rate"` // Sampling rate (0.0-1.0, default: 1.0)
+	Insecure     bool    `yaml:"insecure"`      // Use insecure connection (no TLS)
 }
 
 // DefaultConfig returns default tracing configuration.

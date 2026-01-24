@@ -1,0 +1,51 @@
+# The Redirector - CSV Rules Example
+# Format: origin,destination[,status][,options...]
+#
+# Options: preserve_path, preserve_query
+# Status: Any HTTP status code (default: 301)
+#
+# This format is ideal for:
+# - Bulk imports from spreadsheets
+# - Script-generated rules
+# - Managing 1000s of simple redirects
+#
+# Lines starting with # are comments
+
+# Simple redirects (default 301)
+/old-home,https://example.com/
+/about,https://example.com/company/about
+/contact,https://example.com/support
+
+# With status codes
+/promo/spring,https://shop.example.com/spring-sale,302
+/promo/summer,https://shop.example.com/summer-sale,302
+/temp-redirect,https://example.com/temporary,307
+
+# Prefix patterns with preserve_path
+/blog/*,https://blog.example.com/,301,preserve_path
+/docs/*,https://docs.example.com/,301,preserve_path
+/api/v1/*,https://api.example.com/v2/,307,preserve_path
+
+# With multiple options
+/search/*,https://search.example.com/,302,preserve_path,preserve_query
+
+# Glob patterns (double wildcard)
+/legacy/**,https://new.example.com/,301,preserve_path
+
+# Regex patterns (start with ^)
+^/product/(\d+)$,https://shop.example.com/item/$1,302
+^/user/([a-z0-9]+)$,https://profiles.example.com/$1,301
+
+# Host-based redirects
+old.example.com:/,https://new.example.com/,301,preserve_path
+legacy.example.com:/app/*,https://app.example.com/,301,preserve_path
+
+# Bulk legacy URL migration (typical use case)
+/page1.html,https://example.com/pages/1
+/page2.html,https://example.com/pages/2
+/page3.html,https://example.com/pages/3
+/products/item-a.php,https://shop.example.com/item-a
+/products/item-b.php,https://shop.example.com/item-b
+/news/2020/article1,https://blog.example.com/2020/article1
+/news/2020/article2,https://blog.example.com/2020/article2
+/news/2021/article1,https://blog.example.com/2021/article1

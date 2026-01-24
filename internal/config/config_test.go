@@ -30,8 +30,8 @@ rules:
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("Failed to write temp file: %v", err)
+	if _, writeErr := tmpFile.WriteString(content); writeErr != nil {
+		t.Fatalf("Failed to write temp file: %v", writeErr)
 	}
 	tmpFile.Close()
 
@@ -73,8 +73,8 @@ invalid: yaml: content
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("Failed to write temp file: %v", err)
+	if _, writeErr := tmpFile.WriteString(content); writeErr != nil {
+		t.Fatalf("Failed to write temp file: %v", writeErr)
 	}
 	tmpFile.Close()
 
@@ -111,8 +111,8 @@ rules:
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("Failed to write temp file: %v", err)
+	if _, writeErr := tmpFile.WriteString(content); writeErr != nil {
+		t.Fatalf("Failed to write temp file: %v", writeErr)
 	}
 	tmpFile.Close()
 

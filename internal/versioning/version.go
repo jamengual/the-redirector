@@ -13,13 +13,13 @@ import (
 
 // ConfigVersion represents a specific version of the configuration.
 type ConfigVersion struct {
-	Version    int             `json:"version"`      // Monotonically increasing version number
-	Hash       string          `json:"hash"`         // SHA256 hash of config content
-	LoadedAt   time.Time       `json:"loaded_at"`    // When this version was loaded
-	Source     string          `json:"source"`       // Source of config (file path, s3, github)
-	RulesCount int             `json:"rules_count"`  // Number of rules in this version
-	Changes    *ConfigChanges  `json:"changes"`      // Changes from previous version
-	Config     *config.Config  `json:"-"`            // The actual config (not serialized)
+	Version    int            `json:"version"`     // Monotonically increasing version number
+	Hash       string         `json:"hash"`        // SHA256 hash of config content
+	LoadedAt   time.Time      `json:"loaded_at"`   // When this version was loaded
+	Source     string         `json:"source"`      // Source of config (file path, s3, github)
+	RulesCount int            `json:"rules_count"` // Number of rules in this version
+	Changes    *ConfigChanges `json:"changes"`     // Changes from previous version
+	Config     *config.Config `json:"-"`           // The actual config (not serialized)
 }
 
 // ConfigChanges describes what changed between versions.

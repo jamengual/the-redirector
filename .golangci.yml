@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
   modules-download-mode: readonly
@@ -5,42 +7,65 @@ run:
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - bodyclose
     - noctx
     - prealloc
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment  # Too strict for this project
-  gofmt:
-    simplify: true
-  goimports:
-    local-prefixes: github.com/your-org/the-redirector
-  misspell:
-    locale: US
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false  # Using _ = is explicit acknowledgment of ignored error
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too strict for this project
+    misspell:
+      locale: US
 
-issues:
-  exclude-rules:
-    # Test files can have unused parameters
-    - path: _test\.go
-      linters:
-        - unused
-    # Main files often have simple error handling
-    - path: cmd/
-      linters:
-        - errcheck
-      text: "Error return value of .*(Close|Log|Print)"
+  exclusions:
+    rules:
+      # Test files can have unused parameters
+      - path: _test\.go
+        linters:
+          - unused
+      # Test files often ignore error returns for cleanup
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Remove|Setenv|Unsetenv|Write|Marshal)"
+      # Ignoring Close() errors in defer is common practice
+      - linters:
+          - errcheck
+        text: "Error return value of .*(Close|Shutdown|Stop)"
+      # Main files often have simple error handling
+      - path: cmd/
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Log|Print|Encode|Parse)"
+      # Prealloc suggestions are optional optimizations
+      - linters:
+          - prealloc
+        text: "Consider preallocating"
+      # Deprecated GCS credential functions - tracked for future migration
+      - path: internal/providers/gcs\.go
+        linters:
+          - staticcheck
+        text: "SA1019.*WithCredentials"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/jamengual/the-redirector

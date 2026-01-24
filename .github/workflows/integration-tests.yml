@@ -1,0 +1,144 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify AWS CLI
+        run: |
+          # AWS CLI is pre-installed on GitHub runners
+          aws --version
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Start integration test infrastructure
+        run: |
+          docker compose -f test/integration/docker-compose.yml up -d
+
+          # Wait for services to be healthy
+          echo "Waiting for services to be ready..."
+          sleep 15
+
+          # Verify all containers are running
+          docker compose -f test/integration/docker-compose.yml ps
+
+      - name: Setup test data
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          # Test config content
+          cat > /tmp/config.yaml << 'EOF'
+          version: "1.0"
+          rules:
+            - id: test-redirect
+              match:
+                type: exact
+                path: /old
+              redirect:
+                to: https://new.example.com/
+                status: 301
+          EOF
+
+          CONFIG_YAML=$(cat /tmp/config.yaml)
+
+          # Wait for LocalStack to be fully ready
+          until curl -s http://localhost:4566/_localstack/health | grep -qE '"s3": *"(running|available)"'; do
+            echo "Waiting for LocalStack..."
+            sleep 2
+          done
+          echo "LocalStack ready"
+
+          # S3
+          aws --endpoint-url=http://localhost:4566 s3 mb s3://test-config
+          aws --endpoint-url=http://localhost:4566 s3 cp /tmp/config.yaml s3://test-config/redirector.yaml
+          echo "S3 setup complete"
+
+          # Parameter Store
+          aws --endpoint-url=http://localhost:4566 ssm put-parameter \
+            --name "/redirector/config" \
+            --value "$CONFIG_YAML" \
+            --type String \
+            --overwrite
+          echo "Parameter Store setup complete"
+
+          # Secrets Manager
+          aws --endpoint-url=http://localhost:4566 secretsmanager create-secret \
+            --name "redirector/config" \
+            --secret-string "$CONFIG_YAML" 2>/dev/null || \
+          aws --endpoint-url=http://localhost:4566 secretsmanager put-secret-value \
+            --secret-id "redirector/config" \
+            --secret-string "$CONFIG_YAML"
+          echo "Secrets Manager setup complete"
+
+          # Azure Blob Storage
+          AZURE_CONN="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+          az storage container create --name configs --connection-string "$AZURE_CONN" 2>/dev/null || true
+          az storage blob upload \
+            --container-name configs \
+            --name redirector.yaml \
+            --file /tmp/config.yaml \
+            --connection-string "$AZURE_CONN" \
+            --overwrite
+          echo "Azure Blob setup complete"
+
+          # Fake GCS
+          curl -sf -X POST "http://localhost:4443/storage/v1/b?project=test" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "test-config"}' || true
+          curl -sf -X POST "http://localhost:4443/upload/storage/v1/b/test-config/o?uploadType=media&name=redirector.yaml" \
+            -H "Content-Type: application/x-yaml" \
+            --data-binary "@/tmp/config.yaml"
+          echo "GCS setup complete"
+
+          # Consul (using HTTP API)
+          curl -s -X PUT "http://localhost:8500/v1/kv/redirector/config" \
+            -d "$CONFIG_YAML"
+          echo "Consul setup complete"
+
+          # etcd (using HTTP API with base64 encoding, -w 0 prevents line wrapping)
+          KEY_BASE64=$(echo -n "/redirector/config" | base64 -w 0)
+          VALUE_BASE64=$(echo -n "$CONFIG_YAML" | base64 -w 0)
+          curl -s -X POST "http://localhost:2379/v3/kv/put" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\": \"$KEY_BASE64\", \"value\": \"$VALUE_BASE64\"}"
+          echo "etcd setup complete"
+
+      - name: Run integration tests
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:4566
+        run: |
+          go test -tags=integration -v ./test/integration/...
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker compose -f test/integration/docker-compose.yml logs
+
+      - name: Stop integration test infrastructure
+        if: always()
+        run: |
+          docker compose -f test/integration/docker-compose.yml down -v

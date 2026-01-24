@@ -5,96 +5,178 @@
 # How often to check for config updates
 sync_interval: 60s
 
-# Configuration sources (tried in priority order)
+# Retry configuration for failed pushes
+retry_attempts: 3
+retry_delay: 1s  # Exponential backoff applied
+
+# =============================================================================
+# MULTI-TEAM CONFIGURATION EXAMPLE
+# =============================================================================
+# Each team manages their own config source. The syncer merges them together.
+# Rule IDs are automatically prefixed with the source prefix to avoid conflicts.
+
 sources:
-  # Local file source (highest priority)
-  - name: local-file
-    type: file
-    priority: 100
-    enabled: true
-    file:
-      path: /etc/redirector/config.yaml
-
-  # AWS S3 source
-  - name: s3-config
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MARKETING TEAM - S3 bucket managed by marketing
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: marketing
     type: s3
-    priority: 50
-    enabled: false
-    s3:
-      bucket: my-config-bucket
-      key: redirector/config.yaml
+    prefix: "marketing"  # Rules become: marketing/campaign-spring, etc.
+    priority: 10
+    # Restrict to only these path prefixes (security)
+    allowed_paths:
+      - "/promo/"
+      - "/campaign/"
+      - "/landing/"
+    config:
+      bucket: marketing-team-config
+      key: redirects/rules.yaml
       region: us-east-1
-      # role_arn: arn:aws:iam::123456789012:role/config-reader  # For cross-account
-      # endpoint: http://localhost:9000  # For S3-compatible (MinIO)
 
-  # GitHub repository source
-  - name: github-config
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ENGINEERING TEAM - GitHub repo managed by engineering
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: engineering
     type: github
-    priority: 25
-    enabled: false
-    github:
+    prefix: "eng"  # Rules become: eng/docs-v2, eng/api-migration, etc.
+    priority: 20
+    allowed_paths:
+      - "/docs/"
+      - "/api/"
+      - "/dev/"
+    config:
       owner: myorg
-      repo: redirector-config
-      path: config.yaml
+      repo: engineering-redirects
+      path: config/rules.yaml
       ref: main
-      strategy: branch  # release, tag, branch, commit
-      # GitHub App auth (recommended)
-      # app_id: 12345
-      # installation_id: 67890
-      # private_key_path: /etc/redirector/github-app.pem
-      # Or PAT (less secure)
+      strategy: branch
       # token: ${GITHUB_TOKEN}
 
-  # HTTP source (generic)
-  - name: http-config
-    type: http
-    priority: 10
-    enabled: false
-    http:
-      url: https://config.example.com/redirector.yaml
-      timeout: 30s
-      headers:
-        Authorization: "Bearer ${CONFIG_API_TOKEN}"
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUPPORT TEAM - S3 bucket managed by support
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: support
+    type: s3
+    prefix: "support"
+    priority: 15
+    allowed_paths:
+      - "/help/"
+      - "/faq/"
+      - "/kb/"
+    config:
+      bucket: support-team-config
+      key: redirects.yaml
+      region: us-east-1
 
-# Output configuration (where to write fetched config)
-output:
-  type: both  # file, api, or both
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLATFORM/INFRA TEAM - Highest priority, can override anything
+  # ─────────────────────────────────────────────────────────────────────────────
+  - name: platform
+    type: file
+    prefix: "platform"
+    priority: 100  # Highest priority - wins conflicts
+    # No allowed_paths = can define rules for any path
+    config:
+      path: /etc/redirector/platform-rules.yaml
 
-  # Write to local file (for redirector to pick up via file watcher)
-  file:
-    path: /etc/redirector/config.yaml
-    mode: 0644
-    atomic: true  # Use tmp + rename for atomic writes
+# =============================================================================
+# MERGE CONFIGURATION
+# =============================================================================
+merge:
+  # How to handle when two sources define rules for the same path:
+  # - "error": Fail the sync (safest - forces teams to coordinate)
+  # - "priority": Higher priority source wins
+  # - "first": First source to define the path wins
+  conflict_resolution: error
 
-  # Push directly to redirector API
-  api:
-    url: http://localhost:8081
-    api_key: ${REDIRECTOR_API_KEY}
-    timeout: 10s
+  # Validate merged config before pushing to targets
+  validate_before_push: true
 
-# Multi-target push (alternative to output.api for multiple redirectors)
+  # Require all sources to have a prefix (recommended for multi-team)
+  require_prefix: true
+
+# =============================================================================
+# TARGETS - Redirector instances to push merged config to
+# =============================================================================
 targets:
-  - name: redirector-1
-    url: http://redirector-1:8081
+  - name: redirector-prod-1
+    url: http://redirector-prod-1:8081
     api_key: ${REDIRECTOR_API_KEY}
     timeout: 10s
 
-  - name: redirector-2
-    url: http://redirector-2:8081
+  - name: redirector-prod-2
+    url: http://redirector-prod-2:8081
     api_key: ${REDIRECTOR_API_KEY}
     timeout: 10s
 
-# Retry configuration for failed pushes
-retry:
-  attempts: 3
-  delay: 1s  # Exponential backoff applied
+  - name: redirector-staging
+    url: http://redirector-staging:8081
+    api_key: ${REDIRECTOR_STAGING_API_KEY}
+    timeout: 10s
 
-# Webhook server for GitHub/GitLab push events
-webhook:
-  enabled: true
-  port: 8082
-  secret: ${WEBHOOK_SECRET}
+# =============================================================================
+# WEBHOOK SERVER
+# =============================================================================
+# Receives push events from GitHub/GitLab to trigger immediate sync
+webhook_port: 8082
+webhook_secret: ${WEBHOOK_SECRET}
 
-# Logging
-log_level: info  # debug, info, warn, error
-log_format: json  # json, console
+# =============================================================================
+# SINGLE-SOURCE CONFIGURATION EXAMPLE (simpler setup)
+# =============================================================================
+# If you don't need multi-team, use a simpler config:
+#
+# sources:
+#   - name: main
+#     type: file
+#     config:
+#       path: /etc/redirector/config.yaml
+#
+# targets:
+#   - name: redirector
+#     url: http://localhost:8081
+
+# =============================================================================
+# TEAM CONFIG FILE EXAMPLES
+# =============================================================================
+#
+# Marketing team's rules.yaml (in s3://marketing-team-config/redirects/):
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ rules:                                                                    │
+# │   - id: spring-sale           # Becomes: marketing/spring-sale           │
+# │     match:                                                                │
+# │       type: exact                                                         │
+# │       path: /promo/spring                                                 │
+# │     redirect:                                                             │
+# │       to: https://example.com/spring-2024-sale                           │
+# │       status: 302                                                         │
+# │                                                                           │
+# │   - id: black-friday          # Becomes: marketing/black-friday          │
+# │     match:                                                                │
+# │       type: prefix                                                        │
+# │       path: /campaign/bf/                                                 │
+# │     redirect:                                                             │
+# │       to: https://shop.example.com/black-friday/                         │
+# │       preserve_path: true                                                 │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Engineering team's rules.yaml (in github.com/myorg/engineering-redirects):
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ rules:                                                                    │
+# │   - id: docs-v2               # Becomes: eng/docs-v2                     │
+# │     match:                                                                │
+# │       type: prefix                                                        │
+# │       path: /docs/v1/                                                     │
+# │     redirect:                                                             │
+# │       to: https://docs.example.com/v2/                                   │
+# │       preserve_path: true                                                 │
+# │       status: 301                                                         │
+# │                                                                           │
+# │   - id: api-deprecation       # Becomes: eng/api-deprecation             │
+# │     match:                                                                │
+# │       type: regex                                                         │
+# │       pattern: ^/api/v1/(.+)$                                            │
+# │     redirect:                                                             │
+# │       to: https://api.example.com/v2/$1                                  │
+# │       status: 307                                                         │
+# └──────────────────────────────────────────────────────────────────────────┘

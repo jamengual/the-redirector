@@ -1,0 +1,92 @@
+# Integration test infrastructure for The Redirector
+# All services are free and don't require cloud accounts
+
+services:
+  # LocalStack - AWS Services Emulator (S3, SSM, Secrets Manager)
+  # https://github.com/localstack/localstack
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"  # Main endpoint
+    environment:
+      - SERVICES=s3,ssm,secretsmanager
+      - DEBUG=0
+      - DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Azurite - Azure Storage Emulator
+  # https://github.com/Azure/Azurite
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    ports:
+      - "10000:10000"  # Blob service
+      - "10001:10001"  # Queue service
+      - "10002:10002"  # Table service
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Fake GCS Server - Google Cloud Storage Emulator
+  # https://github.com/fsouza/fake-gcs-server
+  fake-gcs:
+    image: fsouza/fake-gcs-server:latest
+    ports:
+      - "4443:4443"
+    command: ["-scheme", "http", "-port", "4443", "-external-url", "http://localhost:4443", "-public-host", "localhost:4443"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4443/storage/v1/b"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Consul - Service Discovery and KV Store
+  # https://www.consul.io/
+  consul:
+    image: hashicorp/consul:latest
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: agent -dev -client=0.0.0.0
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # etcd - Distributed KV Store
+  # https://etcd.io/
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.9
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    command:
+      - /usr/local/bin/etcd
+      - --name=node1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://localhost:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=node1=http://etcd:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=etcd-cluster
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+# Network for inter-service communication
+networks:
+  default:
+    name: redirector-test-network

@@ -13,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
 	"github.com/jamengual/the-redirector/internal/config"
 	"github.com/jamengual/the-redirector/internal/server"
 	"github.com/jamengual/the-redirector/internal/watcher"
@@ -75,10 +76,13 @@ func runSync(args []string) {
 	timeout := syncFlags.Duration("timeout", 10*time.Second, "Request timeout")
 	syncFlags.Parse(args)
 
-	client := &http.Client{Timeout: *timeout}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	client := &http.Client{}
 
 	endpoint := *url + "/api/v1/reload"
-	req, err := http.NewRequest("POST", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
 		os.Exit(1)
@@ -93,7 +97,11 @@ func runSync(args []string) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		fmt.Fprintf(os.Stderr, "Error reading response: %v\n", readErr)
+		os.Exit(1)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "Reload failed (HTTP %d): %s\n", resp.StatusCode, string(body))
@@ -204,4 +212,3 @@ func runServer() {
 
 	log.Info().Msg("Server stopped gracefully")
 }
-

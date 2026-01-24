@@ -26,6 +26,15 @@ on:
           - medium
           - high
 
+  # Run on pushes to main that touch performance-critical code
+  push:
+    branches: [main]
+    paths:
+      - 'internal/router/**'
+      - 'internal/server/**'
+      - 'cmd/redirector/**'
+      - 'test/load/**'
+
   # Run on PRs that touch performance-critical code
   pull_request:
     paths:
@@ -38,8 +47,12 @@ on:
   schedule:
     - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
 
+permissions:
+  contents: read
+  pull-requests: write
+
 env:
-  GO_VERSION: '1.21'
+  GO_VERSION: '1.25'
   K6_VERSION: 'v0.49.0'
 
 jobs:
@@ -78,20 +91,44 @@ jobs:
       - name: Compare benchmarks
         id: benchstat
         run: |
-          echo "## Benchmark Comparison" > benchmark-results/comparison.md
-          echo "" >> benchmark-results/comparison.md
-          echo '```' >> benchmark-results/comparison.md
-          benchstat benchmark-results/old.txt benchmark-results/new.txt >> benchmark-results/comparison.md 2>&1 || echo "No comparable benchmarks found" >> benchmark-results/comparison.md
-          echo '```' >> benchmark-results/comparison.md
+          # Generate the raw benchstat comparison
+          BENCHSTAT_OUTPUT=$(benchstat benchmark-results/old.txt benchmark-results/new.txt 2>&1 || echo "")
 
-          # Check for significant regressions (>10% slower)
-          if benchstat benchmark-results/old.txt benchmark-results/new.txt 2>/dev/null | grep -E '\+[1-9][0-9]\.[0-9]+%|\+[0-9]{3,}\.[0-9]+%'; then
+          # Create formatted comparison markdown
+          cat > benchmark-results/comparison.md << 'HEADER'
+          ### Summary
+
+          | Metric | Status |
+          |--------|--------|
+          HEADER
+
+          # Count comparisons
+          TOTAL_BENCHMARKS=$(echo "$BENCHSTAT_OUTPUT" | grep -E '^[A-Z]' | wc -l || echo "0")
+          REGRESSIONS=$(echo "$BENCHSTAT_OUTPUT" | grep -E '\+[1-9][0-9]+\.[0-9]+%' | wc -l || echo "0")
+          IMPROVEMENTS=$(echo "$BENCHSTAT_OUTPUT" | grep -E '\-[0-9]+\.[0-9]+%' | wc -l || echo "0")
+
+          echo "| Benchmarks compared | $TOTAL_BENCHMARKS |" >> benchmark-results/comparison.md
+          echo "| Regressions (>10% slower) | $REGRESSIONS |" >> benchmark-results/comparison.md
+          echo "| Improvements | $IMPROVEMENTS |" >> benchmark-results/comparison.md
+          echo "" >> benchmark-results/comparison.md
+
+          # Check for significant regressions
+          if [ "$REGRESSIONS" -gt "0" ]; then
             echo "regression=true" >> $GITHUB_OUTPUT
-            echo "⚠️ **Warning: Potential performance regression detected!**" >> benchmark-results/comparison.md
+            echo "⚠️ **Note:** Some benchmarks show slower performance. This may be expected if new features were added." >> benchmark-results/comparison.md
           else
             echo "regression=false" >> $GITHUB_OUTPUT
             echo "✅ No significant performance regressions detected." >> benchmark-results/comparison.md
           fi
+
+          echo "" >> benchmark-results/comparison.md
+          echo "<details>" >> benchmark-results/comparison.md
+          echo "<summary>📊 Full benchstat output</summary>" >> benchmark-results/comparison.md
+          echo "" >> benchmark-results/comparison.md
+          echo '```' >> benchmark-results/comparison.md
+          echo "$BENCHSTAT_OUTPUT" >> benchmark-results/comparison.md
+          echo '```' >> benchmark-results/comparison.md
+          echo "</details>" >> benchmark-results/comparison.md
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

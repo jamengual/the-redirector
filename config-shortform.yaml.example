@@ -1,0 +1,137 @@
+# The Redirector - Short-Form Configuration Example
+# This file demonstrates compact rule formats for managing large rule sets.
+#
+# Three formats are supported:
+# 1. Short-form YAML (inline): "/old -> https://new.com [options]"
+# 2. CSV files: "origin,destination,status,options"
+# 3. Standard YAML (verbose): full rule objects
+#
+# You can mix all formats in the same config!
+
+version: "1.0"
+
+server:
+  port: 8080
+  management_port: 8081
+
+defaults:
+  status_code: 301
+  preserve_query: true
+
+# =============================================================================
+# RULE INCLUDES - Load rules from external files
+# =============================================================================
+# Great for:
+# - Separating team-owned rules into different files
+# - Generating rules from scripts/spreadsheets
+# - Managing 1000s of rules without cluttering the main config
+#
+rules_include:
+  - rules/marketing.csv       # CSV file with marketing redirects
+  - rules/legacy-urls.csv     # Bulk legacy URL migrations
+  - rules/seo-redirects.yaml  # SEO team's rules in YAML
+
+# =============================================================================
+# MIXED FORMAT RULES
+# =============================================================================
+rules:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SHORT-FORM RULES (one line each)
+  # Format: /source -> https://destination [options]
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # Simple exact redirects
+  - /old-home -> https://example.com/
+  - /about-us -> https://example.com/company/about
+  - /contact -> https://example.com/support/contact
+
+  # With status code
+  - /temp-promo -> https://shop.example.com/sale [302]
+  - /api/deprecated -> https://api.example.com/v2 [307]
+
+  # With preserve_path (for prefix-like behavior)
+  - /blog/* -> https://blog.example.com/ [preserve_path]
+  - /docs/* -> https://docs.example.com/ [301, preserve_path]
+
+  # Multiple options
+  - /api/v1/* -> https://api.example.com/v2/ [307, preserve_path, preserve_query]
+
+  # Host-based redirects
+  - old.example.com:/ -> https://new.example.com/ [preserve_path]
+  - legacy.example.com:/app/* -> https://app.example.com/ [preserve_path]
+
+  # Glob patterns (double wildcard)
+  - /legacy/** -> https://new.example.com/ [preserve_path]
+
+  # Regex patterns (start with ^)
+  - ^/product/(\d+)$ -> https://shop.example.com/item/$1 [302]
+  - ^/user/([a-z]+)/profile$ -> https://profiles.example.com/$1
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FULL-FORM RULES (when you need more control)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # Complex rule with custom headers
+  - id: api-migration
+    match:
+      type: prefix
+      path: /api/v1/
+    redirect:
+      to: https://api.example.com/v2/
+      status: 307
+      preserve_path: true
+      headers:
+        X-API-Version: "2.0"
+        X-Deprecation-Notice: "v1 is deprecated, migrate to v2"
+
+  # Block rule (non-redirect)
+  - id: block-wp-admin
+    match:
+      type: prefix
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+
+  # Fallback catch-all (lowest priority)
+  - id: fallback
+    match:
+      type: glob
+      pattern: /**
+    redirect:
+      to: https://example.com/not-found
+      status: 302
+    priority: -100
+
+# =============================================================================
+# FORMAT REFERENCE
+# =============================================================================
+#
+# SHORT-FORM SYNTAX:
+#   /path -> https://destination [options]
+#
+#   Options (comma-separated in brackets):
+#   - 301, 302, 307, etc.  - HTTP status code
+#   - preserve_path        - Append matched path to destination
+#   - preserve_query       - Forward query string
+#
+#   Pattern detection (automatic):
+#   - /exact/path          → exact match
+#   - /prefix/             → prefix match (trailing slash)
+#   - /glob/*              → glob match (* or **)
+#   - ^/regex/(\d+)$       → regex match (starts with ^)
+#
+# CSV FORMAT (rules.csv):
+#   # Comments start with #
+#   /source,https://destination
+#   /source,https://destination,301
+#   /source,https://destination,302,preserve_path
+#   /source,https://destination,307,preserve_path,preserve_query
+#
+# EXAMPLE CSV FILE (marketing.csv):
+#   # Marketing campaign redirects
+#   /promo/spring,https://shop.example.com/spring-sale,302
+#   /promo/summer,https://shop.example.com/summer-sale,302
+#   /campaign/bf/*,https://shop.example.com/black-friday/,302,preserve_path
+#   /landing/a,https://example.com/landing-a,302
+#   /landing/b,https://example.com/landing-b,302
