@@ -123,7 +123,7 @@ func (a *GitLabOAuthAuth) AddAuth(req *http.Request) error {
 	defer a.mu.Unlock()
 
 	// Check if token needs refresh
-	if time.Now().Add(5 * time.Minute).After(a.expiresAt) && a.RefreshToken != "" {
+	if time.Now().Add(5*time.Minute).After(a.expiresAt) && a.RefreshToken != "" {
 		if err := a.refreshToken(req.Context()); err != nil {
 			return fmt.Errorf("refreshing OAuth token: %w", err)
 		}
@@ -286,7 +286,7 @@ func (g *GitLabSource) getLatestRelease(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(req); err != nil {
+	if err = g.addAuthHeader(req); err != nil {
 		return "", err
 	}
 
@@ -349,7 +349,7 @@ func (g *GitLabSource) getLatestTag(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(req); err != nil {
+	if err = g.addAuthHeader(req); err != nil {
 		return "", err
 	}
 
@@ -394,7 +394,7 @@ func (g *GitLabSource) getBranchRef(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(req); err != nil {
+	if err = g.addAuthHeader(req); err != nil {
 		return "", err
 	}
 
@@ -447,7 +447,7 @@ func (g *GitLabSource) getFileContent(ctx context.Context, ref string) ([]byte, 
 		return nil, err
 	}
 
-	if err := g.addAuthHeader(req); err != nil {
+	if err = g.addAuthHeader(req); err != nil {
 		return nil, err
 	}
 
@@ -662,7 +662,7 @@ func (g *GitLabSource) Validate(ctx context.Context) error {
 		return err
 	}
 
-	if err := g.addAuthHeader(req); err != nil {
+	if err = g.addAuthHeader(req); err != nil {
 		return err
 	}
 

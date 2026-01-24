@@ -32,11 +32,11 @@ import (
 
 // Server handles HTTP requests and redirects.
 type Server struct {
-	cfg        *config.Config
-	configPath string
-	router     *router.Router
-	stats      *stats.Collector
-	metrics    *metrics.Metrics
+	cfg             *config.Config
+	configPath      string
+	router          *router.Router
+	stats           *stats.Collector
+	metrics         *metrics.Metrics
 	authMiddleware  *auth.Middleware
 	versionStore    *versioning.Store
 	auditLog        *versioning.AuditLog
@@ -184,7 +184,11 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 			Msg("OpenTelemetry tracing enabled")
 	} else {
 		// Create disabled provider for no-op tracing
-		tracingProvider, _ = tracing.NewProvider(context.Background(), nil)
+		var providerErr error
+		tracingProvider, providerErr = tracing.NewProvider(context.Background(), nil)
+		if providerErr != nil {
+			log.Warn().Err(providerErr).Msg("Failed to create no-op tracing provider")
+		}
 	}
 
 	s := &Server{
@@ -635,9 +639,8 @@ func (s *Server) ReloadConfig(path string) error {
 
 	// Start tracing span if enabled
 	var span trace.Span
-	ctx := context.Background()
 	if s.tracingProvider != nil && s.tracingProvider.IsEnabled() {
-		ctx, span = s.tracingProvider.StartConfigReloadSpan(ctx, path)
+		_, span = s.tracingProvider.StartConfigReloadSpan(context.Background(), path)
 		defer span.End()
 	}
 
@@ -1084,8 +1087,8 @@ func (s *Server) handleDebugConfig(ctx *fasthttp.RequestCtx) {
 
 	// Create a sanitized config view (mask sensitive values)
 	type sanitizedConfig struct {
-		Version  string `json:"version"`
-		Server   struct {
+		Version string `json:"version"`
+		Server  struct {
 			Port           int    `json:"port"`
 			ManagementPort int    `json:"management_port"`
 			ReadTimeout    string `json:"read_timeout"`
@@ -1114,10 +1117,10 @@ func (s *Server) handleDebugConfig(ctx *fasthttp.RequestCtx) {
 			SamplingRate float64 `json:"sampling_rate"`
 		} `json:"tracing"`
 		RateLimit struct {
-			Enabled     bool    `json:"enabled"`
-			GlobalRPS   float64 `json:"global_rps"`
-			PerIPRPS    float64 `json:"per_ip_rps"`
-			PathLimits  int     `json:"path_limits_count"`
+			Enabled    bool    `json:"enabled"`
+			GlobalRPS  float64 `json:"global_rps"`
+			PerIPRPS   float64 `json:"per_ip_rps"`
+			PathLimits int     `json:"path_limits_count"`
 		} `json:"rate_limit"`
 		RulesCount int `json:"rules_count"`
 	}
@@ -1206,9 +1209,9 @@ func (s *Server) handleDebugRules(ctx *fasthttp.RequestCtx) {
 	}
 
 	response := struct {
-		Count       int        `json:"count"`
+		Count       int         `json:"count"`
 		RouterStats interface{} `json:"router_stats"`
-		Rules       []ruleInfo `json:"rules"`
+		Rules       []ruleInfo  `json:"rules"`
 	}{
 		Count:       len(rules),
 		RouterStats: s.router.GetStats(),

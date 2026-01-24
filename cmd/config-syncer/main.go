@@ -59,12 +59,12 @@ type SourceConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// Source-specific configuration
-	File            *FileSourceConfig       `yaml:"file,omitempty"`
-	S3              *S3SourceConfig         `yaml:"s3,omitempty"`
-	Azure           *AzureSourceConfig      `yaml:"azure,omitempty"`
-	GitHub          *GitHubSourceConfig     `yaml:"github,omitempty"`
-	HTTP            *HTTPSourceConfig       `yaml:"http,omitempty"`
-	ParameterStore  *ParameterStoreConfig   `yaml:"parameter_store,omitempty"`
+	File           *FileSourceConfig     `yaml:"file,omitempty"`
+	S3             *S3SourceConfig       `yaml:"s3,omitempty"`
+	Azure          *AzureSourceConfig    `yaml:"azure,omitempty"`
+	GitHub         *GitHubSourceConfig   `yaml:"github,omitempty"`
+	HTTP           *HTTPSourceConfig     `yaml:"http,omitempty"`
+	ParameterStore *ParameterStoreConfig `yaml:"parameter_store,omitempty"`
 }
 
 // FileSourceConfig for local file sources.
@@ -74,11 +74,11 @@ type FileSourceConfig struct {
 
 // S3SourceConfig for AWS S3 sources.
 type S3SourceConfig struct {
-	Bucket    string `yaml:"bucket"`
-	Key       string `yaml:"key"`
-	Region    string `yaml:"region"`
-	RoleARN   string `yaml:"role_arn,omitempty"`
-	Endpoint  string `yaml:"endpoint,omitempty"` // For S3-compatible services
+	Bucket   string `yaml:"bucket"`
+	Key      string `yaml:"key"`
+	Region   string `yaml:"region"`
+	RoleARN  string `yaml:"role_arn,omitempty"`
+	Endpoint string `yaml:"endpoint,omitempty"` // For S3-compatible services
 }
 
 // AzureSourceConfig for Azure Blob Storage.
@@ -87,17 +87,17 @@ type AzureSourceConfig struct {
 	ContainerName string `yaml:"container_name"`
 	BlobName      string `yaml:"blob_name"`
 	// Auth can be connection string, managed identity, or SAS token
-	ConnectionString string `yaml:"connection_string,omitempty"`
-	UseManagedIdentity bool `yaml:"use_managed_identity,omitempty"`
+	ConnectionString   string `yaml:"connection_string,omitempty"`
+	UseManagedIdentity bool   `yaml:"use_managed_identity,omitempty"`
 }
 
 // GitHubSourceConfig for GitHub repository sources.
 type GitHubSourceConfig struct {
-	Owner      string `yaml:"owner"`
-	Repo       string `yaml:"repo"`
-	Path       string `yaml:"path"`          // Path to config file in repo
-	Ref        string `yaml:"ref"`           // Branch, tag, or commit
-	Strategy   string `yaml:"strategy"`      // release, tag, branch, commit
+	Owner    string `yaml:"owner"`
+	Repo     string `yaml:"repo"`
+	Path     string `yaml:"path"`     // Path to config file in repo
+	Ref      string `yaml:"ref"`      // Branch, tag, or commit
+	Strategy string `yaml:"strategy"` // release, tag, branch, commit
 
 	// GitHub App authentication (recommended)
 	AppID          int64  `yaml:"app_id,omitempty"`
@@ -114,8 +114,8 @@ type HTTPSourceConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty"`
 	Timeout time.Duration     `yaml:"timeout"`
 	// Auth options
-	BasicAuth *BasicAuthConfig `yaml:"basic_auth,omitempty"`
-	BearerToken string         `yaml:"bearer_token,omitempty"`
+	BasicAuth   *BasicAuthConfig `yaml:"basic_auth,omitempty"`
+	BearerToken string           `yaml:"bearer_token,omitempty"`
 }
 
 // BasicAuthConfig for HTTP basic authentication.
@@ -126,9 +126,9 @@ type BasicAuthConfig struct {
 
 // ParameterStoreConfig for AWS Systems Manager Parameter Store.
 type ParameterStoreConfig struct {
-	Name      string `yaml:"name"`       // Parameter name
-	Region    string `yaml:"region"`
-	WithDecryption bool `yaml:"with_decryption"`
+	Name           string `yaml:"name"` // Parameter name
+	Region         string `yaml:"region"`
+	WithDecryption bool   `yaml:"with_decryption"`
 }
 
 // OutputConfig defines where to write the config.
@@ -145,9 +145,9 @@ type OutputConfig struct {
 
 // FileOutputConfig for writing config to a local file.
 type FileOutputConfig struct {
-	Path     string      `yaml:"path"`
-	Mode     os.FileMode `yaml:"mode"`
-	Atomic   bool        `yaml:"atomic"` // Use atomic write (tmp + rename)
+	Path   string      `yaml:"path"`
+	Mode   os.FileMode `yaml:"mode"`
+	Atomic bool        `yaml:"atomic"` // Use atomic write (tmp + rename)
 }
 
 // APIOutputConfig for pushing config to the redirector API.
@@ -279,7 +279,7 @@ func startWebhookServer(ctx context.Context, port int, secret string, syncer *Sy
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy"}`))
+		_, _ = w.Write([]byte(`{"status":"healthy"}`))
 	})
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -561,7 +561,7 @@ func (s *Syncer) writeFileOutput(data []byte) error {
 			return fmt.Errorf("writing temp file: %w", err)
 		}
 		if err := os.Rename(tmpPath, path); err != nil {
-			os.Remove(tmpPath) // Clean up on failure
+			_ = os.Remove(tmpPath) // Clean up on failure
 			return fmt.Errorf("renaming temp file: %w", err)
 		}
 	} else {
@@ -694,7 +694,10 @@ func (s *Syncer) doPush(ctx context.Context, target *TargetConfig, data []byte) 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
@@ -733,7 +736,10 @@ func (s *Syncer) pushToSingleAPI(ctx context.Context, cfg *APIOutputConfig, data
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("HTTP %d (failed to read body: %v)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -748,8 +754,8 @@ type fileSource struct {
 	path     string
 }
 
-func (s *fileSource) Name() string     { return s.name }
-func (s *fileSource) Priority() int    { return s.priority }
+func (s *fileSource) Name() string  { return s.name }
+func (s *fileSource) Priority() int { return s.priority }
 
 func (s *fileSource) Fetch(ctx context.Context) ([]byte, error) {
 	return os.ReadFile(s.path)
@@ -775,8 +781,8 @@ type httpSource struct {
 	timeout  time.Duration
 }
 
-func (s *httpSource) Name() string     { return s.name }
-func (s *httpSource) Priority() int    { return s.priority }
+func (s *httpSource) Name() string  { return s.name }
+func (s *httpSource) Priority() int { return s.priority }
 
 func (s *httpSource) Fetch(ctx context.Context) ([]byte, error) {
 	// TODO: Implement HTTP GET with timeout and headers

@@ -19,7 +19,7 @@ func TestNewConsulSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				cs := s.(*ConsulSource)
+				cs, _ := s.(*ConsulSource)
 				if cs.cfg.Key != "redirector/config" {
 					t.Errorf("key = %q, want %q", cs.cfg.Key, "redirector/config")
 				}
@@ -37,7 +37,7 @@ func TestNewConsulSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				cs := s.(*ConsulSource)
+				cs, _ := s.(*ConsulSource)
 				if cs.cfg.Address != "consul.example.com:8500" {
 					t.Errorf("address = %q, want %q", cs.cfg.Address, "consul.example.com:8500")
 				}
@@ -54,7 +54,7 @@ func TestNewConsulSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				cs := s.(*ConsulSource)
+				cs, _ := s.(*ConsulSource)
 				if cs.cfg.Token != "acl-token-xxxx" {
 					t.Errorf("token = %q, want %q", cs.cfg.Token, "acl-token-xxxx")
 				}
@@ -69,7 +69,7 @@ func TestNewConsulSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				cs := s.(*ConsulSource)
+				cs, _ := s.(*ConsulSource)
 				if cs.cfg.Namespace != "app-ns" {
 					t.Errorf("namespace = %q, want %q", cs.cfg.Namespace, "app-ns")
 				}
@@ -86,7 +86,7 @@ func TestNewConsulSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				cs := s.(*ConsulSource)
+				cs, _ := s.(*ConsulSource)
 				if cs.cfg.WaitTime != 10*time.Minute {
 					t.Errorf("wait_time = %v, want 10m", cs.cfg.WaitTime)
 				}
@@ -154,9 +154,7 @@ func TestConsulTLSConfig_Parsing(t *testing.T) {
 	}
 
 	// Parse the TLS config manually without creating client
-	sourceCfg := ConsulSourceConfig{
-		Key: cfg["key"].(string),
-	}
+	sourceCfg := ConsulSourceConfig{}
 
 	if tlsCfg, ok := cfg["tls"].(map[string]interface{}); ok {
 		sourceCfg.TLSConfig = &ConsulTLSConfig{}

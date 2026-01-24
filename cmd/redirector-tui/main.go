@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,14 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+)
+
+// ViewMode represents the current view
+type ViewMode int
+
+const (
+	ViewTraffic ViewMode = iota
+	ViewConfig
 )
 
 // Styles
@@ -47,15 +56,6 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("196"))
 
-	statusOKStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("46"))
-
-	statusRedirectStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("226"))
-
-	statusErrorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196"))
-
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241")).
 			Padding(0, 1)
@@ -79,14 +79,14 @@ type RequestRecord struct {
 
 // Summary matches the stats package structure
 type Summary struct {
-	UptimeSeconds  float64           `json:"uptime_seconds"`
-	TotalRequests  int64             `json:"total_requests"`
-	TotalErrors    int64             `json:"total_errors"`
-	RequestsPerSec float64           `json:"requests_per_second"`
-	ErrorRate      float64           `json:"error_rate"`
-	StatusCounts   map[string]int64  `json:"status_counts"`
-	LatencyBuckets map[string]int64  `json:"latency_buckets"`
-	TopRules       []RuleStats       `json:"top_rules"`
+	UptimeSeconds  float64          `json:"uptime_seconds"`
+	TotalRequests  int64            `json:"total_requests"`
+	TotalErrors    int64            `json:"total_errors"`
+	RequestsPerSec float64          `json:"requests_per_second"`
+	ErrorRate      float64          `json:"error_rate"`
+	StatusCounts   map[string]int64 `json:"status_counts"`
+	LatencyBuckets map[string]int64 `json:"latency_buckets"`
+	TopRules       []RuleStats      `json:"top_rules"`
 }
 
 // RuleStats matches the stats package structure
@@ -95,6 +95,51 @@ type RuleStats struct {
 	Hits         int64   `json:"hits"`
 	TotalLatency int64   `json:"total_latency_us"`
 	AvgLatency   float64 `json:"avg_latency_us"`
+}
+
+// MergeReport for multi-team config status
+type MergeReport struct {
+	Sources    []SourceContribution `json:"sources"`
+	TotalRules int                  `json:"total_rules"`
+	Conflicts  []MergeConflict      `json:"conflicts,omitempty"`
+	Warnings   []string             `json:"warnings,omitempty"`
+	MergedAt   time.Time            `json:"merged_at"`
+}
+
+// SourceContribution tracks what each source contributed
+type SourceContribution struct {
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Prefix    string    `json:"prefix"`
+	RuleCount int       `json:"rule_count"`
+	RuleIDs   []string  `json:"rule_ids"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// MergeConflict represents a conflict between sources
+type MergeConflict struct {
+	Path       string   `json:"path"`
+	Sources    []string `json:"sources"`
+	RuleIDs    []string `json:"rule_ids"`
+	Resolution string   `json:"resolution,omitempty"`
+}
+
+// SyncerStatus for syncer endpoint
+type SyncerStatus struct {
+	SyncCount       int64          `json:"sync_count"`
+	SyncErrors      int64          `json:"sync_errors"`
+	LastSyncTime    time.Time      `json:"last_sync_time"`
+	Sources         []SourceStatus `json:"sources"`
+	LastMergeReport *MergeReport   `json:"last_merge_report,omitempty"`
+}
+
+// SourceStatus represents a source's configuration
+type SourceStatus struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Prefix   string `json:"prefix"`
+	Priority int    `json:"priority"`
 }
 
 // SortField defines what column to sort by
@@ -110,56 +155,61 @@ const (
 
 // KeyMap defines keyboard shortcuts
 type KeyMap struct {
-	Quit       key.Binding
-	Refresh    key.Binding
-	SortTime   key.Binding
-	SortStatus key.Binding
+	Quit        key.Binding
+	Refresh     key.Binding
+	SortTime    key.Binding
+	SortStatus  key.Binding
 	SortLatency key.Binding
-	SortPath   key.Binding
-	SortRule   key.Binding
+	SortPath    key.Binding
+	SortRule    key.Binding
 	TogglePause key.Binding
-	Filter     key.Binding
+	Filter      key.Binding
 	ClearFilter key.Binding
-	Help       key.Binding
-	Up         key.Binding
-	Down       key.Binding
+	Help        key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	SwitchView  key.Binding
 }
 
 func defaultKeyMap() KeyMap {
 	return KeyMap{
-		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		SortTime:   key.NewBinding(key.WithKeys("1"), key.WithHelp("1", "sort by time")),
-		SortStatus: key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "sort by status")),
+		Quit:        key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Refresh:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		SortTime:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1", "sort by time")),
+		SortStatus:  key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "sort by status")),
 		SortLatency: key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "sort by latency")),
-		SortPath:   key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "sort by path")),
-		SortRule:   key.NewBinding(key.WithKeys("5"), key.WithHelp("5", "sort by rule")),
+		SortPath:    key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "sort by path")),
+		SortRule:    key.NewBinding(key.WithKeys("5"), key.WithHelp("5", "sort by rule")),
 		TogglePause: key.NewBinding(key.WithKeys("p", " "), key.WithHelp("p/space", "pause")),
-		Filter:     key.NewBinding(key.WithKeys("f", "/"), key.WithHelp("f", "filter")),
+		Filter:      key.NewBinding(key.WithKeys("f", "/"), key.WithHelp("f", "filter")),
 		ClearFilter: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear filter")),
-		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Up:         key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:       key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Up:          key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:        key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		SwitchView:  key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch view")),
 	}
 }
 
 // Model is the bubbletea model
 type Model struct {
-	baseURL     string
-	requests    []RequestRecord
-	summary     Summary
-	table       table.Model
-	keys        KeyMap
-	help        help.Model
-	sortField   SortField
-	sortReverse bool
-	paused      bool
-	filter      string
-	filterMode  bool
-	err         error
-	width       int
-	height      int
-	lastUpdate  time.Time
+	baseURL      string
+	syncerURL    string
+	requests     []RequestRecord
+	summary      Summary
+	syncerStatus *SyncerStatus
+	table        table.Model
+	keys         KeyMap
+	help         help.Model
+	sortField    SortField
+	sortReverse  bool
+	paused       bool
+	filter       string
+	filterMode   bool
+	err          error
+	width        int
+	height       int
+	lastUpdate   time.Time
+	viewMode     ViewMode
 }
 
 // Messages
@@ -168,9 +218,12 @@ type dataMsg struct {
 	requests []RequestRecord
 	summary  Summary
 }
+type syncerDataMsg struct {
+	status *SyncerStatus
+}
 type errMsg error
 
-func initialModel(baseURL string) Model {
+func initialModel(baseURL, syncerURL string) Model {
 	columns := []table.Column{
 		{Title: "Time", Width: 12},
 		{Title: "Status", Width: 6},
@@ -200,20 +253,26 @@ func initialModel(baseURL string) Model {
 
 	return Model{
 		baseURL:   baseURL,
+		syncerURL: syncerURL,
 		table:     t,
 		keys:      defaultKeyMap(),
 		help:      help.New(),
 		sortField: SortByTime,
 		width:     120,
 		height:    40,
+		viewMode:  ViewTraffic,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		fetchData(m.baseURL),
 		tickCmd(),
-	)
+	}
+	if m.syncerURL != "" {
+		cmds = append(cmds, fetchSyncerData(m.syncerURL))
+	}
+	return tea.Batch(cmds...)
 }
 
 func tickCmd() tea.Cmd {
@@ -224,22 +283,33 @@ func tickCmd() tea.Cmd {
 
 func fetchData(baseURL string) tea.Cmd {
 	return func() tea.Msg {
-		client := &http.Client{Timeout: 5 * time.Second}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		client := &http.Client{}
 
 		// Fetch summary
-		summaryResp, err := client.Get(baseURL + "/stats")
+		summaryReq, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/stats", nil)
+		if err != nil {
+			return errMsg(err)
+		}
+		summaryResp, err := client.Do(summaryReq)
 		if err != nil {
 			return errMsg(err)
 		}
 		defer summaryResp.Body.Close()
 
 		var summary Summary
-		if err := json.NewDecoder(summaryResp.Body).Decode(&summary); err != nil {
-			return errMsg(err)
+		if decodeErr := json.NewDecoder(summaryResp.Body).Decode(&summary); decodeErr != nil {
+			return errMsg(decodeErr)
 		}
 
 		// Fetch recent requests
-		requestsResp, err := client.Get(baseURL + "/stats/live?limit=100")
+		requestsReq, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/stats/live?limit=100", nil)
+		if err != nil {
+			return errMsg(err)
+		}
+		requestsResp, err := client.Do(requestsReq)
 		if err != nil {
 			return errMsg(err)
 		}
@@ -251,6 +321,33 @@ func fetchData(baseURL string) tea.Cmd {
 		}
 
 		return dataMsg{requests: requests, summary: summary}
+	}
+}
+
+func fetchSyncerData(syncerURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		client := &http.Client{}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", syncerURL+"/status", nil)
+		if err != nil {
+			return syncerDataMsg{status: nil}
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			// Syncer might not be running - not an error
+			return syncerDataMsg{status: nil}
+		}
+		defer resp.Body.Close()
+
+		var status SyncerStatus
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			return syncerDataMsg{status: nil}
+		}
+
+		return syncerDataMsg{status: &status}
 	}
 }
 
@@ -269,6 +366,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if !m.paused {
 			cmds = append(cmds, fetchData(m.baseURL))
+			if m.syncerURL != "" {
+				cmds = append(cmds, fetchSyncerData(m.syncerURL))
+			}
 		}
 		cmds = append(cmds, tickCmd())
 
@@ -278,6 +378,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastUpdate = time.Now()
 		m.err = nil
 		m.updateTable()
+
+	case syncerDataMsg:
+		m.syncerStatus = msg.status
 
 	case errMsg:
 		m.err = msg
@@ -304,9 +407,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Refresh):
-			return m, fetchData(m.baseURL)
+			refreshCmds := []tea.Cmd{fetchData(m.baseURL)}
+			if m.syncerURL != "" {
+				refreshCmds = append(refreshCmds, fetchSyncerData(m.syncerURL))
+			}
+			return m, tea.Batch(refreshCmds...)
 		case key.Matches(msg, m.keys.TogglePause):
 			m.paused = !m.paused
+		case key.Matches(msg, m.keys.SwitchView):
+			if m.viewMode == ViewTraffic {
+				m.viewMode = ViewConfig
+			} else {
+				m.viewMode = ViewTraffic
+			}
 		case key.Matches(msg, m.keys.SortTime):
 			m.setSortField(SortByTime)
 		case key.Matches(msg, m.keys.SortStatus):
@@ -414,11 +527,19 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
+	switch m.viewMode {
+	case ViewConfig:
+		return m.renderConfigView()
+	default:
+		return m.renderTrafficView()
+	}
+}
+
+func (m Model) renderTrafficView() string {
 	var b strings.Builder
 
-	// Title
-	title := titleStyle.Render("⚡ The Redirector - Live Monitor")
-	b.WriteString(title)
+	// Title with view tabs
+	b.WriteString(m.renderViewTabs())
 	b.WriteString("\n")
 
 	// Stats bar
@@ -460,10 +581,135 @@ func (m Model) View() string {
 
 	// Help
 	b.WriteString(helpStyle.Render(m.help.ShortHelpView([]key.Binding{
-		m.keys.Quit, m.keys.TogglePause, m.keys.Filter, m.keys.Refresh,
+		m.keys.Quit, m.keys.TogglePause, m.keys.Filter, m.keys.SwitchView,
 	})))
 
 	return b.String()
+}
+
+func (m Model) renderConfigView() string {
+	var b strings.Builder
+
+	// Title with view tabs
+	b.WriteString(m.renderViewTabs())
+	b.WriteString("\n\n")
+
+	// Config status header
+	b.WriteString(headerStyle.Render("Multi-Team Configuration Status"))
+	b.WriteString("\n\n")
+
+	if m.syncerStatus == nil || m.syncerStatus.LastMergeReport == nil {
+		noDataStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+		b.WriteString(noDataStyle.Render("  No syncer data available. Connect with --syncer-url to view merge status."))
+		b.WriteString("\n\n")
+		b.WriteString(noDataStyle.Render("  The config syncer reports team conflicts when multiple sources define"))
+		b.WriteString("\n")
+		b.WriteString(noDataStyle.Render("  rules for the same path."))
+		b.WriteString("\n")
+	} else {
+		report := m.syncerStatus.LastMergeReport
+
+		// Source summary
+		sourceHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
+		b.WriteString(sourceHeaderStyle.Render(fmt.Sprintf("Sources (%d) | Total Rules: %d", len(report.Sources), report.TotalRules)))
+		b.WriteString("\n")
+		b.WriteString("─────────────────────────────────────────────────────────────────\n")
+
+		for _, src := range report.Sources {
+			if src.Error != "" {
+				errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+				b.WriteString(fmt.Sprintf("  ✗ %s: %s\n", src.Name, errStyle.Render(src.Error)))
+			} else {
+				prefixInfo := ""
+				if src.Prefix != "" {
+					prefixInfo = fmt.Sprintf(" (prefix: %s)", src.Prefix)
+				}
+				b.WriteString(fmt.Sprintf("  • %s%s: %d rules\n", src.Name, prefixInfo, src.RuleCount))
+			}
+		}
+		b.WriteString("\n")
+
+		// Conflicts section (most important!)
+		if len(report.Conflicts) > 0 {
+			conflictStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+			b.WriteString(conflictStyle.Render(fmt.Sprintf("⚠ TEAM CONFLICTS (%d)", len(report.Conflicts))))
+			b.WriteString("\n")
+			b.WriteString("─────────────────────────────────────────────────────────────────\n")
+			b.WriteString("These rules from different teams conflict at runtime:\n\n")
+
+			conflictPathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+			for i, conflict := range report.Conflicts {
+				b.WriteString(fmt.Sprintf("  %d. Path: %s\n", i+1, conflictPathStyle.Render(conflict.Path)))
+				b.WriteString(fmt.Sprintf("     Teams: %s\n", strings.Join(conflict.Sources, " vs ")))
+				b.WriteString(fmt.Sprintf("     Rules: %s\n", strings.Join(conflict.RuleIDs, ", ")))
+				if conflict.Resolution != "" {
+					resStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
+					b.WriteString(fmt.Sprintf("     Resolution: %s\n", resStyle.Render(conflict.Resolution)))
+				}
+				b.WriteString("\n")
+			}
+		} else {
+			okStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
+			b.WriteString(okStyle.Render("✓ No conflicts between teams"))
+			b.WriteString("\n\n")
+		}
+
+		// Warnings
+		if len(report.Warnings) > 0 {
+			warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226"))
+			b.WriteString(warnStyle.Render(fmt.Sprintf("Warnings (%d)", len(report.Warnings))))
+			b.WriteString("\n")
+			b.WriteString("─────────────────────────────────────────────────────────────────\n")
+			for _, warning := range report.Warnings {
+				b.WriteString(fmt.Sprintf("  • %s\n", warning))
+			}
+			b.WriteString("\n")
+		}
+
+		// Merge timestamp
+		b.WriteString(footerStyle.Render(fmt.Sprintf("Last merge: %s", report.MergedAt.Format("2006-01-02 15:04:05"))))
+		b.WriteString("\n")
+	}
+
+	// Footer
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(m.help.ShortHelpView([]key.Binding{
+		m.keys.Quit, m.keys.Refresh, m.keys.SwitchView,
+	})))
+
+	return b.String()
+}
+
+func (m Model) renderViewTabs() string {
+	activeStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Padding(0, 2)
+
+	inactiveStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Padding(0, 2)
+
+	var trafficTab, configTab string
+	if m.viewMode == ViewTraffic {
+		trafficTab = activeStyle.Render("Traffic")
+		configTab = inactiveStyle.Render("Config")
+	} else {
+		trafficTab = inactiveStyle.Render("Traffic")
+		configTab = activeStyle.Render("Config")
+	}
+
+	// Add conflict indicator to config tab if there are conflicts
+	conflictIndicator := ""
+	if m.syncerStatus != nil && m.syncerStatus.LastMergeReport != nil && len(m.syncerStatus.LastMergeReport.Conflicts) > 0 {
+		conflictIndicator = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(fmt.Sprintf(" (%d)", len(m.syncerStatus.LastMergeReport.Conflicts)))
+	}
+
+	title := titleStyle.Render("⚡ The Redirector")
+	tabs := lipgloss.JoinHorizontal(lipgloss.Center, trafficTab, configTab, conflictIndicator)
+
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", tabs, "  ", helpStyle.Render("[tab] switch"))
 }
 
 func (m Model) renderStatsBar() string {
@@ -546,10 +792,11 @@ func formatNumber(n int64) string {
 
 func main() {
 	baseURL := flag.String("url", "http://localhost:8081", "Management API base URL")
+	syncerURL := flag.String("syncer-url", "", "Config syncer status URL (for multi-team conflict view)")
 	flag.Parse()
 
 	p := tea.NewProgram(
-		initialModel(*baseURL),
+		initialModel(*baseURL, *syncerURL),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)

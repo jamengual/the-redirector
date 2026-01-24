@@ -157,9 +157,7 @@ func TestEtcdTLSConfig_Parsing(t *testing.T) {
 	}
 
 	// Parse TLS config manually
-	sourceCfg := EtcdSourceConfig{
-		Key: cfg["key"].(string),
-	}
+	sourceCfg := EtcdSourceConfig{}
 
 	if tlsCfg, ok := cfg["tls"].(map[string]interface{}); ok {
 		sourceCfg.TLSConfig = &EtcdTLSConfig{}

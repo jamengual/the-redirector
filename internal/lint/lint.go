@@ -139,9 +139,9 @@ func (l *Linter) checkOverlappingPatterns() []Issue {
 				// Only warn if priorities are the same
 				if rule1.Priority == rule2.Priority {
 					issues = append(issues, Issue{
-						Severity: SeverityWarning,
-						RuleID:   rule1.ID,
-						Message:  fmt.Sprintf("Rule '%s' may overlap with '%s': %s", rule1.ID, rule2.ID, overlap),
+						Severity:   SeverityWarning,
+						RuleID:     rule1.ID,
+						Message:    fmt.Sprintf("Rule '%s' may overlap with '%s': %s", rule1.ID, rule2.ID, overlap),
 						Suggestion: "Consider setting different priorities to control matching order",
 					})
 				}
@@ -205,9 +205,9 @@ func (l *Linter) checkGreedyPatterns() []Issue {
 			if rule.Match.Pattern == "/**" || rule.Match.Pattern == "/*" {
 				if rule.Priority >= 0 {
 					issues = append(issues, Issue{
-						Severity: SeverityWarning,
-						RuleID:   rule.ID,
-						Message:  fmt.Sprintf("Greedy glob pattern '%s' will match many paths", rule.Match.Pattern),
+						Severity:   SeverityWarning,
+						RuleID:     rule.ID,
+						Message:    fmt.Sprintf("Greedy glob pattern '%s' will match many paths", rule.Match.Pattern),
 						Suggestion: "Set a negative priority (e.g., -100) to ensure it's evaluated last",
 					})
 				}
@@ -216,9 +216,9 @@ func (l *Linter) checkGreedyPatterns() []Issue {
 		case config.MatchTypeRegex:
 			if strings.HasPrefix(rule.Match.Pattern, ".*") || rule.Match.Pattern == ".*" {
 				issues = append(issues, Issue{
-					Severity: SeverityWarning,
-					RuleID:   rule.ID,
-					Message:  fmt.Sprintf("Pattern starting with '.*' is greedy and slow"),
+					Severity:   SeverityWarning,
+					RuleID:     rule.ID,
+					Message:    "Pattern starting with '.*' is greedy and slow",
 					Suggestion: "Anchor with ^ or use a more specific prefix",
 				})
 			}
@@ -226,9 +226,9 @@ func (l *Linter) checkGreedyPatterns() []Issue {
 		case config.MatchTypePrefix:
 			if rule.Match.Path == "/" && rule.Priority >= 0 {
 				issues = append(issues, Issue{
-					Severity: SeverityWarning,
-					RuleID:   rule.ID,
-					Message:  "Prefix '/' matches all paths",
+					Severity:   SeverityWarning,
+					RuleID:     rule.ID,
+					Message:    "Prefix '/' matches all paths",
 					Suggestion: "Set a negative priority to ensure it's evaluated last",
 				})
 			}
@@ -335,9 +335,9 @@ func (l *Linter) checkUnreachableRules() []Issue {
 			// Check if the prefix/glob/regex would match the exact path
 			if l.wouldMatch(rule, later.Match.Path) {
 				issues = append(issues, Issue{
-					Severity: SeverityWarning,
-					RuleID:   later.ID,
-					Message:  fmt.Sprintf("Rule '%s' may be unreachable - shadowed by '%s'", later.ID, rule.ID),
+					Severity:   SeverityWarning,
+					RuleID:     later.ID,
+					Message:    fmt.Sprintf("Rule '%s' may be unreachable - shadowed by '%s'", later.ID, rule.ID),
 					Suggestion: fmt.Sprintf("Rule '%s' matches path '%s' first", rule.ID, later.Match.Path),
 				})
 			}
@@ -387,4 +387,269 @@ func (l *Linter) checkMissingDefaults() []Issue {
 	}
 
 	return issues
+}
+
+// SourceInput represents a config source for multi-source linting.
+type SourceInput struct {
+	Name     string         // e.g., "marketing", "engineering"
+	Prefix   string         // e.g., "marketing", "eng"
+	Priority int            // Higher priority wins in conflict resolution
+	Config   *config.Config // The loaded config
+}
+
+// MultiSourceConflict represents a conflict between two sources.
+type MultiSourceConflict struct {
+	Path        string   `json:"path"`
+	Sources     []string `json:"sources"`
+	RuleIDs     []string `json:"rule_ids"`
+	MatchType   string   `json:"match_type"` // "exact", "overlap", "potential"
+	Description string   `json:"description"`
+}
+
+// MultiSourceResult contains the result of multi-source linting.
+type MultiSourceResult struct {
+	Sources        []string              `json:"sources"`
+	TotalRules     int                   `json:"total_rules"`
+	Conflicts      []MultiSourceConflict `json:"conflicts"`
+	Issues         []Issue               `json:"issues"`
+	RulesPerSource map[string]int        `json:"rules_per_source"`
+}
+
+// HasConflicts returns true if there are any conflicts.
+func (r *MultiSourceResult) HasConflicts() bool {
+	return len(r.Conflicts) > 0
+}
+
+// HasErrors returns true if there are any error-severity issues.
+func (r *MultiSourceResult) HasErrors() bool {
+	for _, issue := range r.Issues {
+		if issue.Severity == SeverityError {
+			return true
+		}
+	}
+	return r.HasConflicts()
+}
+
+// MultiSourceLinter validates multiple config sources for conflicts.
+type MultiSourceLinter struct {
+	sources []SourceInput
+}
+
+// NewMultiSource creates a linter for multiple config sources.
+func NewMultiSource(sources []SourceInput) *MultiSourceLinter {
+	return &MultiSourceLinter{sources: sources}
+}
+
+// Lint checks all sources for conflicts and issues.
+func (m *MultiSourceLinter) Lint() *MultiSourceResult {
+	result := &MultiSourceResult{
+		Sources:        make([]string, 0, len(m.sources)),
+		RulesPerSource: make(map[string]int),
+	}
+
+	// Collect source names and rule counts
+	for _, src := range m.sources {
+		result.Sources = append(result.Sources, src.Name)
+		result.RulesPerSource[src.Name] = len(src.Config.Rules)
+		result.TotalRules += len(src.Config.Rules)
+	}
+
+	// Lint each source individually
+	for _, src := range m.sources {
+		linter := New(src.Config)
+		srcResult := linter.Lint()
+
+		// Prefix issues with source name
+		for _, issue := range srcResult.Issues {
+			issue.Message = fmt.Sprintf("[%s] %s", src.Name, issue.Message)
+			if issue.RuleID != "" && src.Prefix != "" {
+				issue.RuleID = src.Prefix + "/" + issue.RuleID
+			}
+			result.Issues = append(result.Issues, issue)
+		}
+	}
+
+	// Check for cross-source conflicts
+	result.Conflicts = m.checkCrossSourceConflicts()
+
+	return result
+}
+
+// checkCrossSourceConflicts detects conflicts between different sources.
+func (m *MultiSourceLinter) checkCrossSourceConflicts() []MultiSourceConflict {
+	var conflicts []MultiSourceConflict
+
+	// Build a map of path -> (source, rule) for conflict detection
+	type pathEntry struct {
+		source string
+		ruleID string
+		prefix string
+		rule   config.Rule
+	}
+
+	pathMap := make(map[string][]pathEntry)
+
+	for _, src := range m.sources {
+		for _, rule := range src.Config.Rules {
+			// Determine the path key
+			pathKey := rule.Match.Path
+			if pathKey == "" {
+				pathKey = rule.Match.Pattern
+			}
+			if rule.Match.Host != "" {
+				pathKey = rule.Match.Host + ":" + pathKey
+			}
+
+			prefixedID := rule.ID
+			if src.Prefix != "" {
+				prefixedID = src.Prefix + "/" + rule.ID
+			}
+
+			pathMap[pathKey] = append(pathMap[pathKey], pathEntry{
+				source: src.Name,
+				ruleID: prefixedID,
+				prefix: src.Prefix,
+				rule:   rule,
+			})
+		}
+	}
+
+	// Find exact path conflicts
+	for path, entries := range pathMap {
+		if len(entries) > 1 {
+			// Check if entries are from different sources
+			sourceSet := make(map[string]bool)
+			for _, e := range entries {
+				sourceSet[e.source] = true
+			}
+
+			if len(sourceSet) > 1 {
+				var sources, ruleIDs []string
+				for _, e := range entries {
+					sources = append(sources, e.source)
+					ruleIDs = append(ruleIDs, e.ruleID)
+				}
+
+				conflicts = append(conflicts, MultiSourceConflict{
+					Path:        path,
+					Sources:     sources,
+					RuleIDs:     ruleIDs,
+					MatchType:   "exact",
+					Description: fmt.Sprintf("Multiple teams define rules for the same path '%s'", path),
+				})
+			}
+		}
+	}
+
+	// Check for potential overlaps (prefix vs exact, glob patterns, etc.)
+	for i, src1 := range m.sources {
+		for j, src2 := range m.sources {
+			if i >= j {
+				continue
+			}
+
+			for _, rule1 := range src1.Config.Rules {
+				for _, rule2 := range src2.Config.Rules {
+					if overlap := detectCrossSourceOverlap(rule1, rule2); overlap != "" {
+						id1 := rule1.ID
+						id2 := rule2.ID
+						if src1.Prefix != "" {
+							id1 = src1.Prefix + "/" + id1
+						}
+						if src2.Prefix != "" {
+							id2 = src2.Prefix + "/" + id2
+						}
+
+						// Skip if this is already detected as an exact conflict
+						alreadyDetected := false
+						for _, c := range conflicts {
+							if c.MatchType == "exact" && containsAll(c.RuleIDs, []string{id1, id2}) {
+								alreadyDetected = true
+								break
+							}
+						}
+
+						if !alreadyDetected {
+							conflicts = append(conflicts, MultiSourceConflict{
+								Path:        fmt.Sprintf("%s vs %s", rule1.Match.Path+rule1.Match.Pattern, rule2.Match.Path+rule2.Match.Pattern),
+								Sources:     []string{src1.Name, src2.Name},
+								RuleIDs:     []string{id1, id2},
+								MatchType:   "overlap",
+								Description: overlap,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return conflicts
+}
+
+// detectCrossSourceOverlap checks if two rules from different sources may conflict.
+func detectCrossSourceOverlap(r1, r2 config.Rule) string {
+	// Get paths
+	path1 := r1.Match.Path
+	if path1 == "" {
+		path1 = r1.Match.Pattern
+	}
+	path2 := r2.Match.Path
+	if path2 == "" {
+		path2 = r2.Match.Pattern
+	}
+
+	// Exact matches don't overlap unless identical (already caught above)
+	if r1.Match.Type == config.MatchTypeExact && r2.Match.Type == config.MatchTypeExact {
+		return ""
+	}
+
+	// Prefix overlaps
+	if r1.Match.Type == config.MatchTypePrefix && r2.Match.Type == config.MatchTypePrefix {
+		if strings.HasPrefix(r1.Match.Path, r2.Match.Path) || strings.HasPrefix(r2.Match.Path, r1.Match.Path) {
+			return fmt.Sprintf("Prefix rules overlap: '%s' and '%s' may match the same paths", r1.Match.Path, r2.Match.Path)
+		}
+	}
+
+	// Prefix vs exact
+	if r1.Match.Type == config.MatchTypePrefix && r2.Match.Type == config.MatchTypeExact {
+		if strings.HasPrefix(r2.Match.Path, r1.Match.Path) {
+			return fmt.Sprintf("Prefix '%s' would match exact path '%s'", r1.Match.Path, r2.Match.Path)
+		}
+	}
+	if r2.Match.Type == config.MatchTypePrefix && r1.Match.Type == config.MatchTypeExact {
+		if strings.HasPrefix(r1.Match.Path, r2.Match.Path) {
+			return fmt.Sprintf("Prefix '%s' would match exact path '%s'", r2.Match.Path, r1.Match.Path)
+		}
+	}
+
+	// Glob catch-all can overlap with anything
+	if r1.Match.Type == config.MatchTypeGlob && strings.Contains(r1.Match.Pattern, "**") {
+		pattern := strings.TrimSuffix(r1.Match.Pattern, "/**")
+		if strings.HasPrefix(path2, pattern) {
+			return fmt.Sprintf("Glob '%s' may catch paths meant for '%s'", r1.Match.Pattern, path2)
+		}
+	}
+	if r2.Match.Type == config.MatchTypeGlob && strings.Contains(r2.Match.Pattern, "**") {
+		pattern := strings.TrimSuffix(r2.Match.Pattern, "/**")
+		if strings.HasPrefix(path1, pattern) {
+			return fmt.Sprintf("Glob '%s' may catch paths meant for '%s'", r2.Match.Pattern, path1)
+		}
+	}
+
+	return ""
+}
+
+// containsAll checks if slice a contains all elements of slice b.
+func containsAll(a, b []string) bool {
+	m := make(map[string]bool)
+	for _, v := range a {
+		m[v] = true
+	}
+	for _, v := range b {
+		if !m[v] {
+			return false
+		}
+	}
+	return true
 }

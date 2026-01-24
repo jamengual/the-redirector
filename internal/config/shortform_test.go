@@ -8,10 +8,10 @@ import (
 
 func TestParseShortForm_Simple(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantSrc  string
-		wantDest string
+		name       string
+		input      string
+		wantSrc    string
+		wantDest   string
 		wantStatus int
 	}{
 		{

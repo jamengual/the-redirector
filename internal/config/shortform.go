@@ -68,10 +68,10 @@ func ParseShortForm(line string) (*ShortFormRule, error) {
 		options := strings.Split(matches[3], ",")
 		for _, opt := range options {
 			opt = strings.TrimSpace(strings.ToLower(opt))
-			switch {
-			case opt == "preserve_path" || opt == "preservepath":
+			switch opt {
+			case "preserve_path", "preservepath":
 				rule.PreservePath = true
-			case opt == "preserve_query" || opt == "preservequery":
+			case "preserve_query", "preservequery":
 				rule.PreserveQuery = true
 			default:
 				// Try to parse as status code
@@ -163,10 +163,10 @@ func ParseCSVLine(line string) (*ShortFormRule, error) {
 	// Parse remaining fields
 	for i := 2; i < len(parts); i++ {
 		opt := strings.TrimSpace(strings.ToLower(parts[i]))
-		switch {
-		case opt == "preserve_path" || opt == "preservepath":
+		switch opt {
+		case "preserve_path", "preservepath":
 			rule.PreservePath = true
-		case opt == "preserve_query" || opt == "preservequery":
+		case "preserve_query", "preservequery":
 			rule.PreserveQuery = true
 		default:
 			// Try to parse as status code
@@ -284,15 +284,15 @@ func (f *FlexibleRule) UnmarshalYAML(value *yaml.Node) error {
 
 // FlexibleConfig is like Config but supports flexible rule formats.
 type FlexibleConfig struct {
-	Version      string          `yaml:"version"`
-	Server       ServerConfig    `yaml:"server"`
-	Defaults     DefaultConfig   `yaml:"defaults"`
-	Stats        *StatsConfig    `yaml:"stats"`
-	Auth         *AuthConfig     `yaml:"auth"`
-	Tracing      *TracingConfig  `yaml:"tracing"`
+	Version      string           `yaml:"version"`
+	Server       ServerConfig     `yaml:"server"`
+	Defaults     DefaultConfig    `yaml:"defaults"`
+	Stats        *StatsConfig     `yaml:"stats"`
+	Auth         *AuthConfig      `yaml:"auth"`
+	Tracing      *TracingConfig   `yaml:"tracing"`
 	RateLimit    *RateLimitConfig `yaml:"rate_limit"`
-	Rules        []FlexibleRule  `yaml:"rules"`
-	RulesInclude []string        `yaml:"rules_include"`
+	Rules        []FlexibleRule   `yaml:"rules"`
+	RulesInclude []string         `yaml:"rules_include"`
 }
 
 // ToConfig converts FlexibleConfig to regular Config.
@@ -403,12 +403,11 @@ func LoadWithIncludes(path string) (*Config, error) {
 	}
 
 	// Apply defaults and validate
-	rcfg.Config.applyDefaults()
+	rcfg.applyDefaults()
 
-	if err := rcfg.Config.Validate(); err != nil {
+	if err := rcfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	return &rcfg.Config, nil
 }
-

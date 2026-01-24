@@ -217,12 +217,12 @@ func TestCollector_LatencyBuckets(t *testing.T) {
 	c := NewCollector(cfg)
 
 	// Record requests in different latency buckets
-	c.Record(RequestRecord{Status: 301, LatencyUs: 50})     // <100us
-	c.Record(RequestRecord{Status: 301, LatencyUs: 250})    // <500us
-	c.Record(RequestRecord{Status: 301, LatencyUs: 750})    // <1ms
-	c.Record(RequestRecord{Status: 301, LatencyUs: 3000})   // <5ms
-	c.Record(RequestRecord{Status: 301, LatencyUs: 7500})   // <10ms
-	c.Record(RequestRecord{Status: 301, LatencyUs: 15000})  // >=10ms
+	c.Record(RequestRecord{Status: 301, LatencyUs: 50})    // <100us
+	c.Record(RequestRecord{Status: 301, LatencyUs: 250})   // <500us
+	c.Record(RequestRecord{Status: 301, LatencyUs: 750})   // <1ms
+	c.Record(RequestRecord{Status: 301, LatencyUs: 3000})  // <5ms
+	c.Record(RequestRecord{Status: 301, LatencyUs: 7500})  // <10ms
+	c.Record(RequestRecord{Status: 301, LatencyUs: 15000}) // >=10ms
 
 	summary := c.GetSummary()
 

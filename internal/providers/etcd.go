@@ -275,6 +275,7 @@ func (e *EtcdSource) Watch(ctx context.Context) (<-chan *config.Config, error) {
 
 			watchCh := e.client.Watch(ctx, e.cfg.Key, watchOpts...)
 
+		watchLoop:
 			for {
 				select {
 				case <-ctx.Done():
@@ -284,17 +285,17 @@ func (e *EtcdSource) Watch(ctx context.Context) (<-chan *config.Config, error) {
 				case wresp, ok := <-watchCh:
 					if !ok {
 						// Watch channel closed, restart
-						break
+						break watchLoop
 					}
 
 					if wresp.Canceled {
 						log.Warn().Msg("etcd watch canceled, restarting")
-						break
+						break watchLoop
 					}
 
 					if wresp.Err() != nil {
 						log.Error().Err(wresp.Err()).Msg("etcd watch error")
-						break
+						break watchLoop
 					}
 
 					for _, ev := range wresp.Events {

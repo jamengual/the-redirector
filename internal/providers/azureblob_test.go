@@ -21,7 +21,7 @@ func TestNewAzureBlobSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ab := s.(*AzureBlobSource)
+				ab, _ := s.(*AzureBlobSource)
 				if ab.cfg.Container != "configs" {
 					t.Errorf("container = %q, want %q", ab.cfg.Container, "configs")
 				}
@@ -40,7 +40,7 @@ func TestNewAzureBlobSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ab := s.(*AzureBlobSource)
+				ab, _ := s.(*AzureBlobSource)
 				if ab.cfg.StorageAccount != "mystorageaccount" {
 					t.Errorf("storage_account = %q, want %q", ab.cfg.StorageAccount, "mystorageaccount")
 				}
@@ -66,7 +66,7 @@ func TestNewAzureBlobSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ab := s.(*AzureBlobSource)
+				ab, _ := s.(*AzureBlobSource)
 				if ab.cfg.PollInterval != 10*time.Minute {
 					t.Errorf("poll_interval = %v, want 10m", ab.cfg.PollInterval)
 				}

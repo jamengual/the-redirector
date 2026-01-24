@@ -90,7 +90,7 @@ func (w *Watcher) processEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("Watcher context cancelled")
+			log.Debug().Msg("Watcher context canceled")
 			return
 
 		case event, ok := <-w.watcher.Events:

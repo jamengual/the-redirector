@@ -15,11 +15,11 @@ type mockSource struct {
 	err    error
 }
 
-func (m *mockSource) Name() string                                      { return m.name }
-func (m *mockSource) Fetch(ctx context.Context) (*config.Config, error) { return m.config, m.err }
-func (m *mockSource) Validate(ctx context.Context) error                { return nil }
-func (m *mockSource) Close() error                                      { return nil }
-func (m *mockSource) SupportsWatch() bool                               { return false }
+func (m *mockSource) Name() string                                             { return m.name }
+func (m *mockSource) Fetch(ctx context.Context) (*config.Config, error)        { return m.config, m.err }
+func (m *mockSource) Validate(ctx context.Context) error                       { return nil }
+func (m *mockSource) Close() error                                             { return nil }
+func (m *mockSource) SupportsWatch() bool                                      { return false }
 func (m *mockSource) Watch(ctx context.Context) (<-chan *config.Config, error) { return nil, nil }
 
 func init() {

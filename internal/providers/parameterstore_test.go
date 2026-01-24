@@ -18,7 +18,7 @@ func TestNewParameterStoreSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ps := s.(*ParameterStoreSource)
+				ps, _ := s.(*ParameterStoreSource)
 				if ps.cfg.Path != "/myapp/config" {
 					t.Errorf("path = %q, want %q", ps.cfg.Path, "/myapp/config")
 				}
@@ -36,7 +36,7 @@ func TestNewParameterStoreSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ps := s.(*ParameterStoreSource)
+				ps, _ := s.(*ParameterStoreSource)
 				if ps.cfg.Region != "us-west-2" {
 					t.Errorf("region = %q, want %q", ps.cfg.Region, "us-west-2")
 				}
@@ -53,7 +53,7 @@ func TestNewParameterStoreSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ps := s.(*ParameterStoreSource)
+				ps, _ := s.(*ParameterStoreSource)
 				if ps.cfg.WithDecryption {
 					t.Error("WithDecryption should be false")
 				}
@@ -67,7 +67,7 @@ func TestNewParameterStoreSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ps := s.(*ParameterStoreSource)
+				ps, _ := s.(*ParameterStoreSource)
 				if ps.cfg.PollInterval.Minutes() != 5 {
 					t.Errorf("poll_interval = %v, want 5m", ps.cfg.PollInterval)
 				}
@@ -81,7 +81,7 @@ func TestNewParameterStoreSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				ps := s.(*ParameterStoreSource)
+				ps, _ := s.(*ParameterStoreSource)
 				if !ps.cfg.Recursive {
 					t.Error("recursive should be true")
 				}

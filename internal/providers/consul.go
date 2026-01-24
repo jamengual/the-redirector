@@ -69,13 +69,13 @@ type ConsulTLSConfig struct {
 
 // ConsulSource fetches configuration from Consul KV store.
 type ConsulSource struct {
-	cfg         ConsulSourceConfig
-	client      *api.Client
-	lastIndex   uint64 // ModifyIndex for change detection
-	mu          sync.RWMutex
-	stopCh      chan struct{}
-	options     SourceOptions
-	queryOpts   *api.QueryOptions
+	cfg       ConsulSourceConfig
+	client    *api.Client
+	lastIndex uint64 // ModifyIndex for change detection
+	mu        sync.RWMutex
+	stopCh    chan struct{}
+	options   SourceOptions
+	queryOpts *api.QueryOptions
 }
 
 // NewConsulSourceFromMap creates a new Consul source from a config map.
@@ -280,7 +280,7 @@ func (c *ConsulSource) Watch(ctx context.Context) (<-chan *config.Config, error)
 			pair, meta, err := kv.Get(c.cfg.Key, opts.WithContext(ctx))
 			if err != nil {
 				if ctx.Err() != nil {
-					return // Context cancelled
+					return // Context canceled
 				}
 				log.Error().Err(err).Msg("Error watching Consul key")
 				time.Sleep(time.Second) // Brief delay before retry

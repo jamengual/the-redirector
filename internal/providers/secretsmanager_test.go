@@ -19,7 +19,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.SecretID != "my-app/config" {
 					t.Errorf("secret_id = %q, want %q", sm.cfg.SecretID, "my-app/config")
 				}
@@ -37,7 +37,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.Region != "eu-west-1" {
 					t.Errorf("region = %q, want %q", sm.cfg.Region, "eu-west-1")
 				}
@@ -54,7 +54,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.VersionID != "12345678-1234-1234-1234-123456789012" {
 					t.Errorf("version_id = %q, want %q", sm.cfg.VersionID, "12345678-1234-1234-1234-123456789012")
 				}
@@ -68,7 +68,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.VersionStage != "AWSPREVIOUS" {
 					t.Errorf("version_stage = %q, want %q", sm.cfg.VersionStage, "AWSPREVIOUS")
 				}
@@ -82,7 +82,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.CacheTTL != 10*time.Minute {
 					t.Errorf("cache_ttl = %v, want 10m", sm.cfg.CacheTTL)
 				}
@@ -96,7 +96,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.PollInterval != time.Minute {
 					t.Errorf("poll_interval = %v, want 1m", sm.cfg.PollInterval)
 				}
@@ -109,7 +109,7 @@ func TestNewSecretsManagerSourceFromMap(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				sm := s.(*SecretsManagerSource)
+				sm, _ := s.(*SecretsManagerSource)
 				if sm.cfg.SecretID != "arn:aws:secretsmanager:us-west-2:123456789:secret:my-app/config-AbCdEf" {
 					t.Errorf("secret_id unexpected value")
 				}

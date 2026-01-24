@@ -30,10 +30,10 @@ type RuleStats struct {
 // Collector collects and stores request statistics.
 type Collector struct {
 	// Ring buffer for live view
-	ringBuffer   []RequestRecord
-	ringHead     int
-	ringSize     int
-	ringMu       sync.RWMutex
+	ringBuffer []RequestRecord
+	ringHead   int
+	ringSize   int
+	ringMu     sync.RWMutex
 
 	// Counters
 	totalRequests atomic.Int64
@@ -151,7 +151,9 @@ func (c *Collector) Record(rec RequestRecord) {
 
 func (c *Collector) incrementStatus(status int) {
 	val, _ := c.statusCounts.LoadOrStore(status, &atomic.Int64{})
-	val.(*atomic.Int64).Add(1)
+	if counter, ok := val.(*atomic.Int64); ok {
+		counter.Add(1)
+	}
 }
 
 func (c *Collector) updateRuleStats(ruleID string, latencyUs int64) {
@@ -160,9 +162,10 @@ func (c *Collector) updateRuleStats(ruleID string, latencyUs int64) {
 	}
 
 	val, _ := c.ruleStats.LoadOrStore(ruleID, &ruleStatsInternal{})
-	stats := val.(*ruleStatsInternal)
-	stats.hits.Add(1)
-	stats.totalLatency.Add(latencyUs)
+	if stats, ok := val.(*ruleStatsInternal); ok {
+		stats.hits.Add(1)
+		stats.totalLatency.Add(latencyUs)
+	}
 }
 
 func (c *Collector) updateLatencyHistogram(latencyUs int64) {
@@ -187,14 +190,14 @@ func (c *Collector) updateLatencyHistogram(latencyUs int64) {
 
 // Summary returns overall statistics.
 type Summary struct {
-	UptimeSeconds   float64            `json:"uptime_seconds"`
-	TotalRequests   int64              `json:"total_requests"`
-	TotalErrors     int64              `json:"total_errors"`
-	RequestsPerSec  float64            `json:"requests_per_second"`
-	ErrorRate       float64            `json:"error_rate"`
-	StatusCounts    map[int]int64      `json:"status_counts"`
-	LatencyBuckets  map[string]int64   `json:"latency_buckets"`
-	TopRules        []RuleStats        `json:"top_rules"`
+	UptimeSeconds  float64          `json:"uptime_seconds"`
+	TotalRequests  int64            `json:"total_requests"`
+	TotalErrors    int64            `json:"total_errors"`
+	RequestsPerSec float64          `json:"requests_per_second"`
+	ErrorRate      float64          `json:"error_rate"`
+	StatusCounts   map[int]int64    `json:"status_counts"`
+	LatencyBuckets map[string]int64 `json:"latency_buckets"`
+	TopRules       []RuleStats      `json:"top_rules"`
 }
 
 // GetSummary returns the current statistics summary.
@@ -214,26 +217,37 @@ func (c *Collector) GetSummary() Summary {
 	// Collect status counts
 	statusCounts := make(map[int]int64)
 	c.statusCounts.Range(func(key, value interface{}) bool {
-		statusCounts[key.(int)] = value.(*atomic.Int64).Load()
+		if k, ok := key.(int); ok {
+			if v, ok := value.(*atomic.Int64); ok {
+				statusCounts[k] = v.Load()
+			}
+		}
 		return true
 	})
 
 	// Collect latency buckets
 	c.latencyMu.Lock()
 	latencyBuckets := map[string]int64{
-		"<100us":   c.latencyBuckets[0],
-		"<500us":   c.latencyBuckets[1],
-		"<1ms":     c.latencyBuckets[2],
-		"<5ms":     c.latencyBuckets[3],
-		"<10ms":    c.latencyBuckets[4],
-		">=10ms":   c.latencyBuckets[5],
+		"<100us": c.latencyBuckets[0],
+		"<500us": c.latencyBuckets[1],
+		"<1ms":   c.latencyBuckets[2],
+		"<5ms":   c.latencyBuckets[3],
+		"<10ms":  c.latencyBuckets[4],
+		">=10ms": c.latencyBuckets[5],
 	}
 	c.latencyMu.Unlock()
 
 	// Collect top rules
 	var topRules []RuleStats
 	c.ruleStats.Range(func(key, value interface{}) bool {
-		stats := value.(*ruleStatsInternal)
+		stats, ok := value.(*ruleStatsInternal)
+		if !ok {
+			return true
+		}
+		ruleID, ok := key.(string)
+		if !ok {
+			return true
+		}
 		hits := stats.hits.Load()
 		totalLat := stats.totalLatency.Load()
 
@@ -243,7 +257,7 @@ func (c *Collector) GetSummary() Summary {
 		}
 
 		topRules = append(topRules, RuleStats{
-			ID:           key.(string),
+			ID:           ruleID,
 			Hits:         hits,
 			TotalLatency: totalLat,
 			AvgLatency:   avgLat,
@@ -315,7 +329,10 @@ func (c *Collector) GetRuleStats(ruleID string) (RuleStats, bool) {
 		return RuleStats{}, false
 	}
 
-	stats := val.(*ruleStatsInternal)
+	stats, ok := val.(*ruleStatsInternal)
+	if !ok {
+		return RuleStats{}, false
+	}
 	hits := stats.hits.Load()
 	totalLat := stats.totalLatency.Load()
 

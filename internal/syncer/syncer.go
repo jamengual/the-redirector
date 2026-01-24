@@ -99,13 +99,13 @@ type MergeReport struct {
 
 // SourceContribution tracks what each source contributed.
 type SourceContribution struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	Prefix     string   `json:"prefix"`
-	RuleCount  int      `json:"rule_count"`
-	RuleIDs    []string `json:"rule_ids"`
-	FetchedAt  time.Time `json:"fetched_at"`
-	Error      string   `json:"error,omitempty"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Prefix    string    `json:"prefix"`
+	RuleCount int       `json:"rule_count"`
+	RuleIDs   []string  `json:"rule_ids"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Error     string    `json:"error,omitempty"`
 }
 
 // MergeConflict represents a conflict between sources.
@@ -413,8 +413,8 @@ func (s *Syncer) fetchAndMerge(ctx context.Context) (*config.Config, error) {
 	}
 
 	// Track paths for conflict detection
-	pathToSource := make(map[string]string)   // path -> source name
-	pathToRuleID := make(map[string]string)   // path -> rule ID
+	pathToSource := make(map[string]string) // path -> source name
+	pathToRuleID := make(map[string]string) // path -> rule ID
 
 	for _, swc := range sortedSources {
 		srcCfg := swc.cfg
@@ -796,7 +796,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // StartWebhookServer starts the webhook HTTP server.

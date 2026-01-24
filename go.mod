@@ -1,6 +1,6 @@
 module github.com/jamengual/the-redirector
 
-go 1.24
+go 1.25.5
 
 require (
 	cloud.google.com/go/storage v1.59.1

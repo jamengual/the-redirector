@@ -24,7 +24,7 @@ func TestNewGitLabSource(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				gl := s.(*GitLabSource)
+				gl, _ := s.(*GitLabSource)
 				if gl.projectPath != "mygroup/myproject" {
 					t.Errorf("projectPath = %q, want %q", gl.projectPath, "mygroup/myproject")
 				}
@@ -44,7 +44,7 @@ func TestNewGitLabSource(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				gl := s.(*GitLabSource)
+				gl, _ := s.(*GitLabSource)
 				if gl.baseURL != "https://gitlab.example.com" {
 					t.Errorf("baseURL = %q, want %q", gl.baseURL, "https://gitlab.example.com")
 				}
@@ -58,7 +58,7 @@ func TestNewGitLabSource(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				gl := s.(*GitLabSource)
+				gl, _ := s.(*GitLabSource)
 				if gl.auth == nil {
 					t.Error("expected auth to be set")
 				}
@@ -80,8 +80,8 @@ func TestNewGitLabSource(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				gl := s.(*GitLabSource)
-				tokenAuth := gl.auth.(*GitLabTokenAuth)
+				gl, _ := s.(*GitLabSource)
+				tokenAuth, _ := gl.auth.(*GitLabTokenAuth)
 				if tokenAuth.TokenType != "oauth" {
 					t.Errorf("tokenType = %q, want %q", tokenAuth.TokenType, "oauth")
 				}
@@ -97,7 +97,7 @@ func TestNewGitLabSource(t *testing.T) {
 			},
 			wantErr: false,
 			check: func(t *testing.T, s Source) {
-				gl := s.(*GitLabSource)
+				gl, _ := s.(*GitLabSource)
 				if gl.filePath != "redirects/config.yaml" {
 					t.Errorf("filePath = %q, want %q", gl.filePath, "redirects/config.yaml")
 				}
@@ -239,7 +239,10 @@ func TestGitLabTokenAuth_AddAuth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", "https://example.com", nil)
+			req, reqErr := http.NewRequestWithContext(context.Background(), "GET", "https://example.com", nil)
+			if reqErr != nil {
+				t.Fatalf("Failed to create request: %v", reqErr)
+			}
 			err := tt.auth.AddAuth(req)
 			if err != nil {
 				t.Fatalf("AddAuth() error = %v", err)
@@ -259,9 +262,9 @@ func TestGitLabTokenAuth_AddAuth(t *testing.T) {
 
 func TestGitLabSource_Validate(t *testing.T) {
 	tests := []struct {
-		name       string
-		statusCode int
-		wantErr    bool
+		name        string
+		statusCode  int
+		wantErr     bool
 		errContains string
 	}{
 		{
@@ -317,10 +320,10 @@ func TestGitLabSource_Validate(t *testing.T) {
 
 func TestGitLabSource_HandleWebhook(t *testing.T) {
 	tests := []struct {
-		name     string
-		strategy DeploymentStrategy
-		event    string
-		payload  interface{}
+		name      string
+		strategy  DeploymentStrategy
+		event     string
+		payload   interface{}
 		wantFetch bool
 	}{
 		{

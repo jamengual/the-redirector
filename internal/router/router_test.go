@@ -38,10 +38,10 @@ func TestRouter_ExactMatch(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		path     string
-		wantID   string
-		wantNil  bool
+		name    string
+		path    string
+		wantID  string
+		wantNil bool
 	}{
 		{"exact match /foo", "/foo", "exact-1", false},
 		{"exact match /bar", "/bar", "exact-2", false},
@@ -160,7 +160,7 @@ func TestRouter_RegexMatch(t *testing.T) {
 
 	// Validate and compile patterns
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, err := New(cfg.Rules)
 	if err != nil {
@@ -208,30 +208,30 @@ func TestRouter_Stats(t *testing.T) {
 	preserveQuery := true
 	rules := []config.Rule{
 		{
-			ID:    "exact-1",
-			Match: config.Match{Type: config.MatchTypeExact, Path: "/a"},
+			ID:       "exact-1",
+			Match:    config.Match{Type: config.MatchTypeExact, Path: "/a"},
 			Redirect: config.Redirect{To: "https://example.com/a", Status: 301, PreserveQuery: &preserveQuery},
 		},
 		{
-			ID:    "exact-2",
-			Match: config.Match{Type: config.MatchTypeExact, Path: "/b"},
+			ID:       "exact-2",
+			Match:    config.Match{Type: config.MatchTypeExact, Path: "/b"},
 			Redirect: config.Redirect{To: "https://example.com/b", Status: 301, PreserveQuery: &preserveQuery},
 		},
 		{
-			ID:    "prefix-1",
-			Match: config.Match{Type: config.MatchTypePrefix, Path: "/api/"},
+			ID:       "prefix-1",
+			Match:    config.Match{Type: config.MatchTypePrefix, Path: "/api/"},
 			Redirect: config.Redirect{To: "https://api.example.com/", Status: 301, PreserveQuery: &preserveQuery},
 		},
 		{
-			ID:    "regex-1",
-			Match: config.Match{Type: config.MatchTypeRegex, Pattern: `^/product/\d+$`},
+			ID:       "regex-1",
+			Match:    config.Match{Type: config.MatchTypeRegex, Pattern: `^/product/\d+$`},
 			Redirect: config.Redirect{To: "https://shop.example.com/", Status: 301, PreserveQuery: &preserveQuery},
 		},
 	}
 
 	// Validate
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 	stats := r.GetStats()
@@ -257,8 +257,8 @@ func BenchmarkRouter_ExactMatch(b *testing.B) {
 	for i := 0; i < 1000; i++ {
 		preserveQuery := true
 		rules[i] = config.Rule{
-			ID:    string(rune(i)),
-			Match: config.Match{Type: config.MatchTypeExact, Path: "/path/" + string(rune(i))},
+			ID:       string(rune(i)),
+			Match:    config.Match{Type: config.MatchTypeExact, Path: "/path/" + string(rune(i))},
 			Redirect: config.Redirect{To: "https://example.com/", Status: 301, PreserveQuery: &preserveQuery},
 		}
 	}
@@ -276,8 +276,8 @@ func BenchmarkRouter_PrefixMatch(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		preserveQuery := true
 		rules[i] = config.Rule{
-			ID:    string(rune(i)),
-			Match: config.Match{Type: config.MatchTypePrefix, Path: "/prefix/" + string(rune(i)) + "/"},
+			ID:       string(rune(i)),
+			Match:    config.Match{Type: config.MatchTypePrefix, Path: "/prefix/" + string(rune(i)) + "/"},
 			Redirect: config.Redirect{To: "https://example.com/", Status: 301, PreserveQuery: &preserveQuery},
 		}
 	}
@@ -301,7 +301,7 @@ func BenchmarkRouter_RegexMatch(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
@@ -327,7 +327,7 @@ func BenchmarkRouter_GlobMatch(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
@@ -348,7 +348,7 @@ func BenchmarkRouter_GlobDeepPath(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
@@ -374,16 +374,16 @@ func BenchmarkRouter_MixedRules(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
 	paths := []string{
-		"/home",                 // exact
-		"/blog/post-123",        // prefix
-		"/product/99999",        // regex
+		"/home",                    // exact
+		"/blog/post-123",           // prefix
+		"/product/99999",           // regex
 		"/docs/v1/getting-started", // glob
-		"/unknown/path",         // no match
+		"/unknown/path",            // no match
 	}
 
 	b.ResetTimer()
@@ -427,7 +427,7 @@ func BenchmarkRouter_LargeRuleSet(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
@@ -446,7 +446,7 @@ func BenchmarkRouter_NoMatch(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 
@@ -493,7 +493,7 @@ func BenchmarkRouter_NewRouter(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		New(rules)
+		_, _ = New(rules)
 	}
 }
 
@@ -510,11 +510,11 @@ func BenchmarkRouter_NewRouterWithRegex(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		New(cfg.Rules)
+		_, _ = New(cfg.Rules)
 	}
 }
 
@@ -542,7 +542,7 @@ func BenchmarkRouter_RegexMatch_Allocs(b *testing.B) {
 	}
 
 	cfg := &config.Config{Rules: rules}
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	r, _ := New(cfg.Rules)
 

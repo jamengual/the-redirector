@@ -86,16 +86,16 @@ func (a *JWTAuthenticator) Authenticate(ctx *fasthttp.RequestCtx) (*Principal, e
 
 	// Validate issuer
 	if a.config.Issuer != "" {
-		issuer, err := claims.GetIssuer()
-		if err != nil || issuer != a.config.Issuer {
+		issuer, issuerErr := claims.GetIssuer()
+		if issuerErr != nil || issuer != a.config.Issuer {
 			return nil, fmt.Errorf("%w: invalid issuer", ErrInvalidToken)
 		}
 	}
 
 	// Validate audience
 	if a.config.Audience != "" {
-		audiences, err := claims.GetAudience()
-		if err != nil {
+		audiences, audErr := claims.GetAudience()
+		if audErr != nil {
 			return nil, fmt.Errorf("%w: invalid audience", ErrInvalidToken)
 		}
 		found := false
@@ -113,7 +113,10 @@ func (a *JWTAuthenticator) Authenticate(ctx *fasthttp.RequestCtx) (*Principal, e
 	// Extract permissions from claims
 	permissions := a.extractPermissions(claims)
 
-	subject, _ := claims.GetSubject()
+	subject, err := claims.GetSubject()
+	if err != nil {
+		subject = "" // Default to empty if subject claim is missing
+	}
 
 	return &Principal{
 		ID:          subject,

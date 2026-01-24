@@ -232,7 +232,7 @@ func NewGitHubSource(cfg map[string]interface{}) (Source, error) {
 func configureGitHubAppAuth(cfg map[string]interface{}) (*GitHubAppAuth, error) {
 	appID, ok := cfg["app_id"].(int64)
 	if !ok {
-		if f, ok := cfg["app_id"].(float64); ok {
+		if f, floatOk := cfg["app_id"].(float64); floatOk {
 			appID = int64(f)
 		}
 	}
@@ -321,7 +321,7 @@ func (g *GitHubSource) getLatestRelease(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(ctx, req); err != nil {
+	if err = g.addAuthHeader(ctx, req); err != nil {
 		return "", err
 	}
 
@@ -378,7 +378,7 @@ func (g *GitHubSource) getLatestTag(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(ctx, req); err != nil {
+	if err = g.addAuthHeader(ctx, req); err != nil {
 		return "", err
 	}
 
@@ -419,7 +419,7 @@ func (g *GitHubSource) getBranchRef(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := g.addAuthHeader(ctx, req); err != nil {
+	if err = g.addAuthHeader(ctx, req); err != nil {
 		return "", err
 	}
 
@@ -469,7 +469,7 @@ func (g *GitHubSource) getFileContent(ctx context.Context, ref string) ([]byte, 
 	// Request raw content
 	req.Header.Set("Accept", "application/vnd.github.raw")
 
-	if err := g.addAuthHeader(ctx, req); err != nil {
+	if err = g.addAuthHeader(ctx, req); err != nil {
 		return nil, err
 	}
 
@@ -697,7 +697,7 @@ func (g *GitHubSource) Validate(ctx context.Context) error {
 		return err
 	}
 
-	if err := g.addAuthHeader(ctx, req); err != nil {
+	if err = g.addAuthHeader(ctx, req); err != nil {
 		return err
 	}
 

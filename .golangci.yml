@@ -20,7 +20,7 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: true
+      check-blank: false  # Using _ = is explicit acknowledgment of ignored error
     govet:
       enable-all: true
       disable:
@@ -48,6 +48,15 @@ linters:
         linters:
           - errcheck
         text: "Error return value of .*(Close|Log|Print|Encode|Parse)"
+      # Prealloc suggestions are optional optimizations
+      - linters:
+          - prealloc
+        text: "Consider pre-allocating"
+      # Deprecated GCS credential functions - tracked for future migration
+      - path: internal/providers/gcs\.go
+        linters:
+          - staticcheck
+        text: "SA1019.*WithCredentials"
 
 formatters:
   enable:

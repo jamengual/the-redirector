@@ -126,7 +126,7 @@ func TestLinter_CheckRegexPerformance_MultipleWildcard(t *testing.T) {
 	}
 
 	// Need to validate to compile the regex
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	linter := New(cfg)
 	result := linter.Lint()
@@ -154,7 +154,7 @@ func TestLinter_CheckRegexPerformance_NestedQuantifiers(t *testing.T) {
 		},
 	}
 
-	cfg.Validate()
+	_ = cfg.Validate()
 
 	linter := New(cfg)
 	result := linter.Lint()
@@ -242,5 +242,186 @@ func TestLinter_RulesCount(t *testing.T) {
 
 	if result.RulesCount != 3 {
 		t.Errorf("Expected RulesCount=3, got %d", result.RulesCount)
+	}
+}
+
+// Multi-source linting tests
+
+func TestMultiSourceLinter_NoConflicts(t *testing.T) {
+	sources := []SourceInput{
+		{
+			Name:   "marketing",
+			Prefix: "marketing",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "promo", Match: config.Match{Type: config.MatchTypeExact, Path: "/promo/spring"}, Redirect: config.Redirect{Status: 301, To: "http://marketing.com"}},
+				},
+			},
+		},
+		{
+			Name:   "engineering",
+			Prefix: "eng",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "docs", Match: config.Match{Type: config.MatchTypeExact, Path: "/docs/v1"}, Redirect: config.Redirect{Status: 301, To: "http://docs.com"}},
+				},
+			},
+		},
+	}
+
+	linter := NewMultiSource(sources)
+	result := linter.Lint()
+
+	if result.HasConflicts() {
+		t.Errorf("Expected no conflicts, got %d", len(result.Conflicts))
+	}
+
+	if result.TotalRules != 2 {
+		t.Errorf("Expected 2 total rules, got %d", result.TotalRules)
+	}
+}
+
+func TestMultiSourceLinter_ExactPathConflict(t *testing.T) {
+	sources := []SourceInput{
+		{
+			Name:   "team-a",
+			Prefix: "team-a",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "rule-1", Match: config.Match{Type: config.MatchTypeExact, Path: "/same-path"}, Redirect: config.Redirect{Status: 301, To: "http://a.com"}},
+				},
+			},
+		},
+		{
+			Name:   "team-b",
+			Prefix: "team-b",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "rule-2", Match: config.Match{Type: config.MatchTypeExact, Path: "/same-path"}, Redirect: config.Redirect{Status: 301, To: "http://b.com"}},
+				},
+			},
+		},
+	}
+
+	linter := NewMultiSource(sources)
+	result := linter.Lint()
+
+	if !result.HasConflicts() {
+		t.Error("Expected conflict for same path from different teams")
+	}
+
+	if len(result.Conflicts) != 1 {
+		t.Errorf("Expected 1 conflict, got %d", len(result.Conflicts))
+	}
+
+	conflict := result.Conflicts[0]
+	if conflict.MatchType != "exact" {
+		t.Errorf("Expected 'exact' match type, got %s", conflict.MatchType)
+	}
+	if conflict.Path != "/same-path" {
+		t.Errorf("Expected '/same-path' path, got %s", conflict.Path)
+	}
+}
+
+func TestMultiSourceLinter_PrefixOverlapConflict(t *testing.T) {
+	sources := []SourceInput{
+		{
+			Name:   "team-a",
+			Prefix: "team-a",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "prefix", Match: config.Match{Type: config.MatchTypePrefix, Path: "/api/"}, Redirect: config.Redirect{Status: 301, To: "http://a.com"}},
+				},
+			},
+		},
+		{
+			Name:   "team-b",
+			Prefix: "team-b",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "exact", Match: config.Match{Type: config.MatchTypeExact, Path: "/api/users"}, Redirect: config.Redirect{Status: 301, To: "http://b.com"}},
+				},
+			},
+		},
+	}
+
+	linter := NewMultiSource(sources)
+	result := linter.Lint()
+
+	if !result.HasConflicts() {
+		t.Error("Expected conflict for prefix overlapping exact path")
+	}
+
+	// Check that the conflict description mentions the overlap
+	found := false
+	for _, c := range result.Conflicts {
+		if c.MatchType == "overlap" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected overlap conflict type")
+	}
+}
+
+func TestMultiSourceLinter_RulesPerSource(t *testing.T) {
+	sources := []SourceInput{
+		{
+			Name:   "source-1",
+			Prefix: "s1",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "a", Match: config.Match{Type: config.MatchTypeExact, Path: "/a"}, Redirect: config.Redirect{Status: 301, To: "http://a.com"}},
+					{ID: "b", Match: config.Match{Type: config.MatchTypeExact, Path: "/b"}, Redirect: config.Redirect{Status: 301, To: "http://b.com"}},
+				},
+			},
+		},
+		{
+			Name:   "source-2",
+			Prefix: "s2",
+			Config: &config.Config{
+				Rules: []config.Rule{
+					{ID: "c", Match: config.Match{Type: config.MatchTypeExact, Path: "/c"}, Redirect: config.Redirect{Status: 301, To: "http://c.com"}},
+				},
+			},
+		},
+	}
+
+	linter := NewMultiSource(sources)
+	result := linter.Lint()
+
+	if result.RulesPerSource["source-1"] != 2 {
+		t.Errorf("Expected 2 rules for source-1, got %d", result.RulesPerSource["source-1"])
+	}
+	if result.RulesPerSource["source-2"] != 1 {
+		t.Errorf("Expected 1 rule for source-2, got %d", result.RulesPerSource["source-2"])
+	}
+}
+
+func TestMultiSourceResult_HasErrors(t *testing.T) {
+	// With conflicts
+	result := &MultiSourceResult{
+		Conflicts: []MultiSourceConflict{
+			{Path: "/test"},
+		},
+	}
+	if !result.HasErrors() {
+		t.Error("Expected HasErrors() to return true when there are conflicts")
+	}
+
+	// Without conflicts, with error issue
+	result = &MultiSourceResult{
+		Issues: []Issue{
+			{Severity: SeverityError, Message: "error"},
+		},
+	}
+	if !result.HasErrors() {
+		t.Error("Expected HasErrors() to return true when there are error issues")
+	}
+
+	// No errors
+	result = &MultiSourceResult{}
+	if result.HasErrors() {
+		t.Error("Expected HasErrors() to return false when there are no conflicts or errors")
 	}
 }
