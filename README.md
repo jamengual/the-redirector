@@ -339,6 +339,87 @@ config/
 
 ---
 
+## Compact Rule Formats
+
+For managing large rule sets (1000s of rules), use compact formats instead of verbose YAML.
+
+### Short-Form YAML
+
+One rule per line, inline in your config:
+
+```yaml
+rules:
+  # Simple redirects
+  - /old -> https://new.com
+  - /about -> https://example.com/company/about
+
+  # With status code
+  - /temp-promo -> https://shop.example.com/sale [302]
+
+  # With options
+  - /blog/* -> https://blog.example.com/ [301, preserve_path]
+  - /api/v1/* -> https://api.com/v2/ [307, preserve_path, preserve_query]
+
+  # Host-based
+  - old.example.com:/ -> https://new.example.com/ [preserve_path]
+
+  # Regex (starts with ^)
+  - ^/product/(\d+)$ -> https://shop.example.com/item/$1 [302]
+
+  # Mix with full-form rules
+  - id: complex-rule
+    match:
+      type: prefix
+      path: /complex/
+    redirect:
+      to: https://example.com/
+      headers:
+        X-Custom: "value"
+```
+
+**Pattern detection is automatic:**
+| Pattern | Type |
+|---------|------|
+| `/exact/path` | exact |
+| `/prefix/` (trailing /) | prefix |
+| `/glob/*` or `/**` | glob |
+| `^/regex/` | regex |
+
+### CSV Format
+
+For bulk imports from spreadsheets or scripts:
+
+```csv
+# rules.csv - comments start with #
+/old,https://new.com
+/blog/*,https://blog.com/,301,preserve_path
+/api/v1/*,https://api.com/v2/,307,preserve_path,preserve_query
+```
+
+Format: `origin,destination[,status][,options...]`
+
+### Include External Files
+
+Reference CSV or YAML files from your main config:
+
+```yaml
+# config.yaml
+version: "1.0"
+
+rules:
+  - /inline-rule -> https://example.com
+
+# Include external rule files
+rules_include:
+  - rules/marketing.csv      # CSV from marketing team
+  - rules/legacy-urls.csv    # Bulk migration rules
+  - rules/api-redirects.yaml # API team YAML rules
+```
+
+**Use case:** Each team maintains their own rules file, included into the main config.
+
+---
+
 ## CLI Tools
 
 ### redirector-lint
@@ -385,6 +466,52 @@ Loaded 25 rules
 Found: 1 errors, 2 warnings, 0 suggestions
 ```
 
+#### Multi-Team Conflict Detection
+
+Detect conflicts between rules from different teams before they cause runtime issues:
+
+```bash
+# Check multiple team configs for conflicts
+./redirector-lint --multi-source \
+  "marketing:marketing:10:rules/marketing.yaml" \
+  "engineering:eng:20:rules/engineering.yaml" \
+  "platform:platform:100:rules/platform.yaml"
+```
+
+Format: `name:prefix:priority:path`
+
+Example output:
+```
+The Redirector - Multi-Team Config Linter
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Sources: 3 | Total Rules: 45
+  • marketing: 15 rules
+  • engineering: 20 rules
+  • platform: 10 rules
+
+⚠ TEAM CONFLICTS (2)
+─────────────────────────────────────────
+These rules from different teams may conflict at runtime:
+
+  1. Multiple teams define rules for the same path '/api/v1/users'
+     Path: /api/v1/users
+     Teams: engineering vs platform
+     Rules: eng/api-users, platform/api-override
+     Type: exact
+
+  2. Prefix rules overlap: '/docs/' and '/docs/v1/' may match the same paths
+     Path: /docs/ vs /docs/v1/
+     Teams: marketing vs engineering
+     Rules: marketing/docs-redirect, eng/docs-v1
+     Type: overlap
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Found: 2 conflicts, 0 errors, 1 warnings
+
+Recommendation: Teams should coordinate on conflicting paths or use
+different path prefixes to avoid runtime conflicts.
+```
+
 ### redirector-tui
 
 Live monitoring dashboard with htop-style interface.
@@ -395,6 +522,9 @@ Live monitoring dashboard with htop-style interface.
 
 # Connect to remote server
 ./redirector-tui --url http://redirector.internal:8081
+
+# With config-syncer for multi-team conflict view
+./redirector-tui --url http://redirector:8081 --syncer-url http://config-syncer:8082
 ```
 
 **Features:**
@@ -404,11 +534,19 @@ Live monitoring dashboard with htop-style interface.
 - Pause/resume (press `p` or space)
 - Summary stats: uptime, requests/sec, errors, error rate
 - Latency histogram
+- **Config view** with multi-team conflict status (press `Tab`)
+
+**Two Views:**
+| View | Description |
+|------|-------------|
+| Traffic | Live request stream with stats |
+| Config | Multi-team merge status and conflicts |
 
 **Keyboard shortcuts:**
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
+| `Tab` | Switch view (Traffic/Config) |
 | `p` / `space` | Pause/resume |
 | `f` / `/` | Filter mode |
 | `c` | Clear filter |
@@ -485,38 +623,95 @@ curl -X POST http://localhost:8081/api/v1/reload
 
 ## Config-Syncer
 
-Separate service for pulling configuration from multiple sources with failover.
+Separate service for pulling configuration from multiple sources with failover and multi-team support.
 
-### Configuration
+### Multi-Team Configuration
+
+Each team manages their own config source. The syncer merges them with conflict detection:
+
+```yaml
+# syncer.yaml
+sync_interval: 60s
+
+sources:
+  # Marketing team - S3 bucket
+  - name: marketing
+    type: s3
+    prefix: "marketing"     # Rules become: marketing/campaign, etc.
+    priority: 10
+    allowed_paths:          # Restrict which paths this team can define
+      - "/promo/"
+      - "/campaign/"
+    config:
+      bucket: marketing-team-config
+      key: redirects/rules.yaml
+      region: us-east-1
+
+  # Engineering team - GitHub repo
+  - name: engineering
+    type: github
+    prefix: "eng"           # Rules become: eng/docs-v2, etc.
+    priority: 20
+    allowed_paths:
+      - "/docs/"
+      - "/api/"
+    config:
+      owner: myorg
+      repo: engineering-redirects
+      path: config/rules.yaml
+      ref: main
+
+  # Platform team - highest priority, can override anything
+  - name: platform
+    type: file
+    prefix: "platform"
+    priority: 100           # Wins in conflicts
+    config:
+      path: /etc/redirector/platform-rules.yaml
+
+# How to handle conflicts between teams
+merge:
+  conflict_resolution: error  # error, priority, or first
+  require_prefix: true        # Force all sources to have prefixes
+
+targets:
+  - name: redirector-prod
+    url: http://redirector:8081
+    api_key: ${REDIRECTOR_API_KEY}
+```
+
+### Conflict Resolution Modes
+
+| Mode | Behavior |
+|------|----------|
+| `error` | Fail sync if teams define rules for same path (safest) |
+| `priority` | Higher priority team wins |
+| `first` | First team to define the path wins |
+
+### Simple Configuration (Single Source)
 
 ```yaml
 # syncer.yaml
 sync_interval: 5m
 
 sources:
-  # Primary: S3
   - name: "s3-primary"
     type: s3
     priority: 100
-    enabled: true
-    s3:
+    config:
       bucket: my-config-bucket
       key: config/redirector.yaml
       region: us-east-1
 
-  # Fallback: Local file
   - name: "local-fallback"
     type: file
     priority: 1
-    enabled: true
-    file:
+    config:
       path: /etc/redirector/config.yaml
 
-output:
-  type: file
-  file:
-    path: /var/lib/redirector/config.yaml
-    atomic: true
+targets:
+  - name: redirector
+    url: http://localhost:8081
 ```
 
 ### Run
@@ -530,6 +725,120 @@ output:
 
 # Dry run (fetch but don't write)
 ./config-syncer --config syncer.yaml --dry-run
+```
+
+### Available Configuration Sources
+
+| Source | Type | Description |
+|--------|------|-------------|
+| File | `file` | Local filesystem (YAML, JSON) |
+| AWS S3 | `s3` | S3 bucket with IAM/cross-account support |
+| AWS Parameter Store | `parameterstore` | SSM parameters (single or hierarchy) |
+| AWS Secrets Manager | `secretsmanager` | Secrets with rotation support |
+| Azure Blob Storage | `azureblob` | Azure Storage with SAS/DefaultCredential |
+| GCP Cloud Storage | `gcs` | GCS with Application Default Credentials |
+| GitHub | `github` | GitHub repos (releases, branches, tags) |
+| GitLab | `gitlab` | GitLab repos with webhook support |
+| HashiCorp Consul | `consul` | Consul KV with native watch |
+| etcd | `etcd` | etcd KV with native watch |
+
+#### AWS Parameter Store Example
+
+```yaml
+sources:
+  - name: aws-params
+    type: parameterstore
+    config:
+      path: /myapp/redirector/config  # Single parameter
+      # Or hierarchy: /myapp/redirector/  (trailing slash)
+      region: us-east-1
+      with_decryption: true  # For SecureString
+      poll_interval: 1m
+```
+
+#### AWS Secrets Manager Example
+
+```yaml
+sources:
+  - name: aws-secrets
+    type: secretsmanager
+    config:
+      secret_id: myapp/redirector-config
+      region: us-east-1
+      version_stage: AWSCURRENT  # Or AWSPREVIOUS
+      cache_ttl: 5m
+```
+
+#### Azure Blob Storage Example
+
+```yaml
+sources:
+  - name: azure-blob
+    type: azureblob
+    config:
+      storage_account: mystorageaccount
+      container: configs
+      blob_name: redirector.yaml
+      # Auth options (pick one):
+      connection_string: ${AZURE_STORAGE_CONNECTION_STRING}
+      # Or: account_key, sas_token, use_default_credential
+```
+
+#### GCP Cloud Storage Example
+
+```yaml
+sources:
+  - name: gcs
+    type: gcs
+    config:
+      bucket: my-config-bucket
+      object: redirector/config.yaml
+      # Auth: Uses Application Default Credentials by default
+      # Or: credentials_file: /path/to/service-account.json
+```
+
+#### GitLab Example
+
+```yaml
+sources:
+  - name: gitlab-config
+    type: gitlab
+    config:
+      project: mygroup/myproject
+      path: config/redirector.yaml
+      base_url: https://gitlab.com  # Or self-hosted
+      strategy: release  # release, branch, tag, commit
+      environment: production
+      token: ${GITLAB_TOKEN}
+```
+
+#### Consul Example
+
+```yaml
+sources:
+  - name: consul-kv
+    type: consul
+    config:
+      key: redirector/config
+      address: consul.service.consul:8500
+      datacenter: dc1
+      token: ${CONSUL_TOKEN}  # ACL token (optional)
+```
+
+#### etcd Example
+
+```yaml
+sources:
+  - name: etcd-kv
+    type: etcd
+    config:
+      key: /redirector/config
+      endpoints:
+        - etcd1:2379
+        - etcd2:2379
+        - etcd3:2379
+      username: root
+      password: ${ETCD_PASSWORD}
 ```
 
 ---
@@ -686,11 +995,14 @@ the-redirector/
 ## Development
 
 ```bash
-# Run tests
+# Run unit tests
 go test ./...
 
 # Run tests with coverage
 go test -cover ./...
+
+# Run integration tests (requires Docker)
+make integration-test
 
 # Build all binaries
 go build ./...
@@ -702,18 +1014,45 @@ go fmt ./...
 go vet ./...
 ```
 
+### Integration Testing
+
+Integration tests run against real services using free emulators:
+
+| Service | Emulator |
+|---------|----------|
+| AWS (S3, SSM, Secrets Manager) | LocalStack |
+| Azure Blob Storage | Azurite |
+| GCP Cloud Storage | fake-gcs-server |
+| Consul | Official Docker image |
+| etcd | Official Docker image |
+
+```bash
+# Start test infrastructure
+make integration-up
+
+# Run integration tests
+make integration-test
+
+# Stop test infrastructure
+make integration-down
+```
+
 ---
 
 ## Roadmap
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed status.
 
-**Upcoming:**
+**Completed:**
 - Prometheus metrics endpoint
 - Hot reload with fsnotify
-- Full AWS S3/Parameter Store integration
+- Full AWS S3/Parameter Store/Secrets Manager integration
+- Azure, GCP, GitLab, Consul, etcd integrations
 - OpenTelemetry tracing
 - Load testing infrastructure
+
+**Upcoming:**
+- Multi-tenancy support
 
 ---
 

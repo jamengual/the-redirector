@@ -1,4 +1,4 @@
-.PHONY: all build test bench lint clean docker run help
+.PHONY: all build test bench lint clean docker run help integration-test integration-up integration-down
 
 # Variables
 BINARY_NAME=redirector
@@ -35,6 +35,27 @@ test-coverage: ## Run tests with coverage report
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+## Integration Testing
+
+integration-up: ## Start integration test infrastructure
+	docker-compose -f test/integration/docker-compose.yml up -d
+	@echo "Waiting for services to be ready..."
+	@sleep 15
+	@chmod +x test/integration/setup.sh
+	./test/integration/setup.sh
+
+integration-down: ## Stop integration test infrastructure
+	docker-compose -f test/integration/docker-compose.yml down -v
+
+integration-test: integration-up ## Run integration tests (starts infrastructure if needed)
+	AWS_ACCESS_KEY_ID=test \
+	AWS_SECRET_ACCESS_KEY=test \
+	AWS_DEFAULT_REGION=us-east-1 \
+	AWS_ENDPOINT_URL=http://localhost:4566 \
+	STORAGE_EMULATOR_HOST=http://localhost:4443 \
+	$(GOTEST) -tags=integration -v ./test/integration/...
+	@$(MAKE) integration-down
 
 ## Benchmarking
 

@@ -177,6 +177,19 @@ This document outlines the phased implementation approach for building The Redir
 - [x] Support in destination URLs
 - [x] Support in header values
 
+### Stage 3.5: Compact Rule Formats
+**Goal**: Simplified formats for managing large rule sets
+**Status**: Complete ✓
+
+**Implementation**: `internal/config/shortform.go`
+
+**Tasks**:
+- [x] Short-form YAML: `/old -> https://new.com [options]`
+- [x] CSV format: `origin,destination,status,options`
+- [x] Include directive: `rules_include: [file.csv, rules.yaml]`
+- [x] Automatic pattern detection (exact, prefix, glob, regex)
+- [x] Mixed format support (short-form + full YAML in same file)
+
 ---
 
 ## Phase 4: Config-Syncer Service
@@ -223,19 +236,35 @@ This document outlines the phased implementation approach for building The Redir
 
 ### Stage 4.4: GitLab Integration
 **Goal**: GitLab repository support
-**Status**: Not Started
+**Status**: Complete ✓
+
+**Implementation**: `internal/providers/gitlab.go`
 
 **Tasks**:
-- [ ] Implement GitLabSource
-- [ ] GitLab App or Project Token auth
-- [ ] Release and branch tracking
-- [ ] Webhook support
+- [x] Implement GitLabSource
+- [x] GitLab App or Project Token auth
+- [x] Release and branch tracking
+- [x] Webhook support
+
+### Stage 4.5: Multi-Team Configuration
+**Goal**: Support multiple teams with isolated config sources
+**Status**: Complete ✓
+
+**Implementation**: `internal/syncer/syncer.go`
+
+**Tasks**:
+- [x] Per-source prefixes (rules become `team/rule-id`)
+- [x] Per-source allowed paths (restrict what paths a team can define)
+- [x] Priority-based conflict resolution
+- [x] Merge report with conflict tracking
+- [x] Path conflict detection between sources
+- [x] Merge warnings and audit trail
 
 ---
 
 ## Phase 5: Cloud Provider Configuration
 **Goal**: Enterprise-grade configuration from cloud services
-**Status**: Partially Complete
+**Status**: Complete ✓
 
 ### Stage 5.1: AWS S3 Integration
 **Goal**: Load and watch configuration from S3
@@ -254,34 +283,44 @@ This document outlines the phased implementation approach for building The Redir
 
 ### Stage 5.2: AWS Parameter Store
 **Goal**: Configuration from SSM Parameter Store
-**Status**: Not Started
+**Status**: Complete ✓
+
+**Implementation**: `internal/providers/parameterstore.go`
 
 **Tasks**:
-- [ ] Implement ParameterStoreConfigSource
-- [ ] Support single parameter or parameter path
-- [ ] SecureString decryption
-- [ ] Hierarchical parameter organization
-- [ ] Polling for updates
+- [x] Implement ParameterStoreConfigSource
+- [x] Support single parameter or parameter path
+- [x] SecureString decryption
+- [x] Hierarchical parameter organization
+- [x] Polling for updates
 
 ### Stage 5.3: AWS Secrets Manager
 **Goal**: Sensitive configuration from Secrets Manager
-**Status**: Not Started
+**Status**: Complete ✓
+
+**Implementation**: `internal/providers/secretsmanager.go`
 
 **Tasks**:
-- [ ] Implement SecretsManagerConfigSource
-- [ ] Automatic secret rotation handling
-- [ ] Version/stage selection
-- [ ] Caching with TTL
+- [x] Implement SecretsManagerConfigSource
+- [x] Automatic secret rotation handling
+- [x] Version/stage selection
+- [x] Caching with TTL
 
 ### Stage 5.4: Additional Cloud Providers
 **Goal**: Multi-cloud support
-**Status**: Not Started
+**Status**: Complete ✓
+
+**Implementation**:
+- `internal/providers/azureblob.go`
+- `internal/providers/gcs.go`
+- `internal/providers/consul.go`
+- `internal/providers/etcd.go`
 
 **Tasks**:
-- [ ] Azure Blob Storage integration
-- [ ] GCP Cloud Storage integration
-- [ ] HashiCorp Consul integration
-- [ ] etcd integration
+- [x] Azure Blob Storage integration
+- [x] GCP Cloud Storage integration
+- [x] HashiCorp Consul integration
+- [x] etcd integration
 
 ### Stage 5.5: Configuration Versioning
 **Goal**: Track and audit configuration changes
@@ -456,13 +495,16 @@ This document outlines the phased implementation approach for building The Redir
 ### Configuration Linter
 **Status**: Complete ✓
 
-**Implementation**: `cmd/redirector-lint/main.go`
+**Implementation**: `cmd/redirector-lint/main.go`, `internal/lint/lint.go`
 
 **Tasks**:
 - [x] Configuration validation
 - [x] Rule conflict detection
 - [x] JSON and colored output modes
 - [x] CI-friendly exit codes
+- [x] Multi-team conflict detection (`--multi-source` mode)
+- [x] Cross-source overlap detection
+- [x] Per-source issue reporting
 
 ### Stats Collector
 **Status**: Complete ✓
@@ -474,6 +516,18 @@ This document outlines the phased implementation approach for building The Redir
 - [x] Per-rule statistics
 - [x] Sampling support for high-volume
 - [x] Live stream endpoint
+
+### TUI Dashboard
+**Status**: Complete ✓
+
+**Implementation**: `cmd/redirector-tui/main.go`
+
+**Tasks**:
+- [x] Live traffic view with sorting and filtering
+- [x] Config status view with merge report
+- [x] Multi-team conflict visualization
+- [x] View switching (Tab key)
+- [x] Syncer status integration (`--syncer-url`)
 
 ---
 
@@ -508,12 +562,12 @@ This document outlines the phased implementation approach for building The Redir
 ## Remaining Work
 
 ### Priority 1 (Recommended)
-- [ ] GitLab Integration (Phase 4.4)
-- [ ] AWS Parameter Store (Phase 5.2)
+- [x] GitLab Integration (Phase 4.4) ✓
+- [x] AWS Parameter Store (Phase 5.2) ✓
 
 ### Priority 2 (Nice to Have)
-- [ ] AWS Secrets Manager (Phase 5.3)
-- [ ] Multi-cloud providers (Phase 5.4)
+- [x] AWS Secrets Manager (Phase 5.3) ✓
+- [x] Multi-cloud providers (Phase 5.4) ✓
 - [ ] Multi-Tenancy (Phase 8.1)
 
 ---
@@ -529,8 +583,12 @@ This document outlines the phased implementation approach for building The Redir
 - **YAML**: `gopkg.in/yaml.v3`
 - **File watching**: `github.com/fsnotify/fsnotify`
 
-### AWS Integration
-- **SDK**: `github.com/aws/aws-sdk-go-v2`
+### Cloud Integration
+- **AWS SDK**: `github.com/aws/aws-sdk-go-v2` (S3, SSM, Secrets Manager)
+- **Azure SDK**: `github.com/Azure/azure-sdk-for-go` (Blob Storage)
+- **GCP SDK**: `cloud.google.com/go/storage`
+- **HashiCorp Consul**: `github.com/hashicorp/consul/api`
+- **etcd**: `go.etcd.io/etcd/client/v3`
 
 ### Observability
 - **Metrics**: `github.com/prometheus/client_golang`
