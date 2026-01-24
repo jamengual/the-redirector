@@ -2,13 +2,9 @@ name: Integration Tests
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
-      - 'fix/**'
-      - 'hotfix/**'
+    branches: [main]
   pull_request:
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   integration-tests:

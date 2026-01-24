@@ -26,11 +26,9 @@ on:
           - medium
           - high
 
-  # Run on pushes to main and feature branches that touch performance-critical code
+  # Run on pushes to main that touch performance-critical code
   push:
-    branches:
-      - main
-      - 'feature/**'
+    branches: [main]
     paths:
       - 'internal/router/**'
       - 'internal/server/**'
