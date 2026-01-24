@@ -12,37 +12,42 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - bodyclose
     - noctx
     - prealloc
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment  # Too strict for this project
-  gofmt:
-    simplify: true
-  goimports:
-    local-prefixes: github.com/your-org/the-redirector
-  misspell:
-    locale: US
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too strict for this project
+    misspell:
+      locale: US
 
-issues:
-  exclude-rules:
-    # Test files can have unused parameters
-    - path: _test\.go
-      linters:
-        - unused
-    # Main files often have simple error handling
-    - path: cmd/
-      linters:
-        - errcheck
-      text: "Error return value of .*(Close|Log|Print)"
+  exclusions:
+    rules:
+      # Test files can have unused parameters
+      - path: _test\.go
+        linters:
+          - unused
+      # Main files often have simple error handling
+      - path: cmd/
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Log|Print)"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes: github.com/jamengual/the-redirector
