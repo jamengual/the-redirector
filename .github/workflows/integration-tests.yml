@@ -22,11 +22,10 @@ jobs:
           go-version: '1.24'
           cache: true
 
-      - name: Install AWS CLI
+      - name: Verify AWS CLI
         run: |
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -q awscliv2.zip
-          sudo ./aws/install
+          # AWS CLI is pre-installed on GitHub runners
+          aws --version
 
       - name: Install Azure CLI
         run: |
@@ -34,14 +33,14 @@ jobs:
 
       - name: Start integration test infrastructure
         run: |
-          docker-compose -f test/integration/docker-compose.yml up -d
+          docker compose -f test/integration/docker compose.yml up -d
 
           # Wait for services to be healthy
           echo "Waiting for services to be ready..."
           sleep 15
 
           # Verify all containers are running
-          docker-compose -f test/integration/docker-compose.yml ps
+          docker compose -f test/integration/docker compose.yml ps
 
       - name: Setup test data
         env:
@@ -138,9 +137,9 @@ jobs:
       - name: Show container logs on failure
         if: failure()
         run: |
-          docker-compose -f test/integration/docker-compose.yml logs
+          docker compose -f test/integration/docker compose.yml logs
 
       - name: Stop integration test infrastructure
         if: always()
         run: |
-          docker-compose -f test/integration/docker-compose.yml down -v
+          docker compose -f test/integration/docker compose.yml down -v
