@@ -71,14 +71,14 @@ func TestWatcher_FileChange(t *testing.T) {
 	}
 
 	var reloadCount int32
-	var lastPath string
+	var lastPath atomic.Value
 
 	w, err := New(Config{
 		Paths:    []string{tmpDir},
 		Debounce: 50 * time.Millisecond,
 		ReloadFunc: func(path string) error {
 			atomic.AddInt32(&reloadCount, 1)
-			lastPath = path
+			lastPath.Store(path)
 			return nil
 		},
 	})
@@ -108,8 +108,8 @@ func TestWatcher_FileChange(t *testing.T) {
 	if atomic.LoadInt32(&reloadCount) == 0 {
 		t.Error("ReloadFunc was not called after file change")
 	}
-	if lastPath != tmpDir {
-		t.Errorf("Expected path %s, got %s", tmpDir, lastPath)
+	if got := lastPath.Load(); got != tmpDir {
+		t.Errorf("Expected path %s, got %v", tmpDir, got)
 	}
 }
 
