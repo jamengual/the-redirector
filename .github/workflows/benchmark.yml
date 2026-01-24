@@ -47,6 +47,10 @@ on:
   schedule:
     - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
 
+permissions:
+  contents: read
+  pull-requests: write
+
 env:
   GO_VERSION: '1.25'
   K6_VERSION: 'v0.49.0'
