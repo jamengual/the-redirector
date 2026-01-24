@@ -8,6 +8,7 @@ on:
 
 env:
   GO_VERSION: '1.24'
+  GOTOOLCHAIN: local
 
 jobs:
   lint:
@@ -22,7 +23,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Sync go.mod with CI Go version
-        run: go mod tidy
+        run: |
+          # Force go.mod to use CI Go version to avoid golangci-lint version mismatch
+          sed -i 's/^go 1\.[0-9]*\(\.[0-9]*\)\?$/go 1.24/' go.mod
+          go mod tidy
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v4
@@ -42,7 +46,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Sync go.mod with CI Go version
-        run: go mod tidy
+        run: |
+          # Force go.mod to use CI Go version to avoid golangci-lint version mismatch
+          sed -i 's/^go 1\.[0-9]*\(\.[0-9]*\)\?$/go 1.24/' go.mod
+          go mod tidy
 
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
