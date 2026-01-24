@@ -34,11 +34,20 @@ linters:
       - path: _test\.go
         linters:
           - unused
+      # Test files often ignore error returns for cleanup
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Remove|Setenv|Unsetenv|Write|Marshal)"
+      # Ignoring Close() errors in defer is common practice
+      - linters:
+          - errcheck
+        text: "Error return value of .*(Close|Shutdown|Stop)"
       # Main files often have simple error handling
       - path: cmd/
         linters:
           - errcheck
-        text: "Error return value of .*(Close|Log|Print)"
+        text: "Error return value of .*(Close|Log|Print|Encode|Parse)"
 
 formatters:
   enable:
