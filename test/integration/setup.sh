@@ -7,8 +7,8 @@ set -e
 # Wait for services to be healthy
 echo "Waiting for services to be ready..."
 
-# LocalStack (AWS)
-until curl -s http://localhost:4566/_localstack/health | grep -q '"s3": *"available"'; do
+# LocalStack (AWS) - check for "running" or "available" status
+until curl -s http://localhost:4566/_localstack/health | grep -qE '"s3": *"(running|available)"'; do
   echo "Waiting for LocalStack..."
   sleep 2
 done
@@ -28,15 +28,15 @@ until curl -s http://localhost:4443/storage/v1/b >/dev/null 2>&1; do
 done
 echo "✓ Fake GCS is ready"
 
-# Consul
-until consul members >/dev/null 2>&1; do
+# Consul (using HTTP API instead of CLI)
+until curl -s http://localhost:8500/v1/agent/members >/dev/null 2>&1; do
   echo "Waiting for Consul..."
   sleep 2
 done
 echo "✓ Consul is ready"
 
-# etcd
-until etcdctl endpoint health >/dev/null 2>&1; do
+# etcd (using HTTP API instead of CLI)
+until curl -s http://localhost:2379/health 2>/dev/null | grep -q '"health"'; do
   echo "Waiting for etcd..."
   sleep 2
 done
@@ -121,12 +121,19 @@ echo "✓ GCS bucket and config created"
 
 # === Consul ===
 echo "Setting up Consul..."
-consul kv put redirector/config "$CONFIG_YAML"
+# Use HTTP API instead of CLI
+curl -s -X PUT "http://localhost:8500/v1/kv/redirector/config" \
+  -d "$CONFIG_YAML" >/dev/null
 echo "✓ Consul KV config created"
 
 # === etcd ===
 echo "Setting up etcd..."
-etcdctl put /redirector/config "$CONFIG_YAML"
+# Use HTTP API instead of CLI (etcd v3 API requires base64 encoding)
+KEY_BASE64=$(echo -n "/redirector/config" | base64)
+VALUE_BASE64=$(echo -n "$CONFIG_YAML" | base64)
+curl -s -X POST "http://localhost:2379/v3/kv/put" \
+  -H "Content-Type: application/json" \
+  -d "{\"key\": \"$KEY_BASE64\", \"value\": \"$VALUE_BASE64\"}" >/dev/null
 echo "✓ etcd config created"
 
 echo ""

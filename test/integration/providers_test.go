@@ -191,15 +191,14 @@ func TestGCSSource_Integration(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	// GCS emulator requires STORAGE_EMULATOR_HOST
-	os.Setenv("STORAGE_EMULATOR_HOST", "http://localhost:4443")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Use endpoint with full path as recommended by fake-gcs-server docs
 	source, err := providers.NewGCSSourceFromMap(map[string]interface{}{
-		"bucket": "test-config",
-		"object": "redirector.yaml",
+		"bucket":   "test-config",
+		"object":   "redirector.yaml",
+		"endpoint": "http://localhost:4443/storage/v1/",
 	})
 	if err != nil {
 		t.Fatalf("failed to create GCS source: %v", err)

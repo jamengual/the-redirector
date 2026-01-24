@@ -12,75 +12,6 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
 
-    services:
-      # LocalStack for AWS services (S3, SSM, Secrets Manager)
-      localstack:
-        image: localstack/localstack:latest
-        ports:
-          - 4566:4566
-        env:
-          SERVICES: s3,ssm,secretsmanager
-          DEBUG: "0"
-          DEFAULT_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: test
-          AWS_SECRET_ACCESS_KEY: test
-        options: >-
-          --health-cmd "curl -f http://localhost:4566/_localstack/health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-      # Azurite for Azure Blob Storage
-      azurite:
-        image: mcr.microsoft.com/azure-storage/azurite:latest
-        ports:
-          - 10000:10000
-          - 10001:10001
-          - 10002:10002
-        options: >-
-          --health-cmd "nc -z localhost 10000 || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-      # Fake GCS Server
-      fake-gcs:
-        image: fsouza/fake-gcs-server:latest
-        ports:
-          - 4443:4443
-        options: >-
-          --health-cmd "wget -q --spider http://localhost:4443/storage/v1/b || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-      # Consul
-      consul:
-        image: hashicorp/consul:latest
-        ports:
-          - 8500:8500
-        env:
-          CONSUL_BIND_INTERFACE: eth0
-        options: >-
-          --health-cmd "consul members"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-      # etcd
-      etcd:
-        image: quay.io/coreos/etcd:v3.5.9
-        ports:
-          - 2379:2379
-        env:
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
-        options: >-
-          --health-cmd "etcdctl endpoint health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -97,50 +28,26 @@ jobs:
           unzip -q awscliv2.zip
           sudo ./aws/install
 
-      - name: Install Consul CLI
+      - name: Install Azure CLI
         run: |
-          wget -q -O consul.zip https://releases.hashicorp.com/consul/1.17.0/consul_1.17.0_linux_amd64.zip
-          unzip -q consul.zip
-          sudo mv consul /usr/local/bin/
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
-      - name: Install etcd CLI
+      - name: Start integration test infrastructure
         run: |
-          wget -q https://github.com/etcd-io/etcd/releases/download/v3.5.9/etcd-v3.5.9-linux-amd64.tar.gz
-          tar xzf etcd-v3.5.9-linux-amd64.tar.gz
-          sudo mv etcd-v3.5.9-linux-amd64/etcdctl /usr/local/bin/
+          docker-compose -f test/integration/docker-compose.yml up -d
 
-      - name: Wait for services
-        run: |
-          echo "Waiting for services to be fully ready..."
-          sleep 10
+          # Wait for services to be healthy
+          echo "Waiting for services to be ready..."
+          sleep 15
 
-          # Verify LocalStack
-          curl -sf http://localhost:4566/_localstack/health || exit 1
-          echo "LocalStack ready"
-
-          # Verify Azurite
-          nc -z localhost 10000 || exit 1
-          echo "Azurite ready"
-
-          # Verify Fake GCS
-          curl -sf http://localhost:4443/storage/v1/b || exit 1
-          echo "Fake GCS ready"
-
-          # Verify Consul
-          consul members || exit 1
-          echo "Consul ready"
-
-          # Verify etcd
-          etcdctl endpoint health || exit 1
-          echo "etcd ready"
+          # Verify all containers are running
+          docker-compose -f test/integration/docker-compose.yml ps
 
       - name: Setup test data
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
-          CONSUL_HTTP_ADDR: 127.0.0.1:8500
-          ETCDCTL_ENDPOINTS: http://127.0.0.1:2379
         run: |
           # Test config content
           cat > /tmp/config.yaml << 'EOF'
@@ -156,6 +63,13 @@ jobs:
           EOF
 
           CONFIG_YAML=$(cat /tmp/config.yaml)
+
+          # Wait for LocalStack to be fully ready
+          until curl -s http://localhost:4566/_localstack/health | grep -qE '"s3": *"(running|available)"'; do
+            echo "Waiting for LocalStack..."
+            sleep 2
+          done
+          echo "LocalStack ready"
 
           # S3
           aws --endpoint-url=http://localhost:4566 s3 mb s3://test-config
@@ -179,6 +93,17 @@ jobs:
             --secret-string "$CONFIG_YAML"
           echo "Secrets Manager setup complete"
 
+          # Azure Blob Storage
+          AZURE_CONN="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+          az storage container create --name configs --connection-string "$AZURE_CONN" 2>/dev/null || true
+          az storage blob upload \
+            --container-name configs \
+            --name redirector.yaml \
+            --file /tmp/config.yaml \
+            --connection-string "$AZURE_CONN" \
+            --overwrite
+          echo "Azure Blob setup complete"
+
           # Fake GCS
           curl -sf -X POST "http://localhost:4443/storage/v1/b?project=test" \
             -H "Content-Type: application/json" \
@@ -188,12 +113,17 @@ jobs:
             --data-binary "@/tmp/config.yaml"
           echo "GCS setup complete"
 
-          # Consul
-          consul kv put redirector/config "$CONFIG_YAML"
+          # Consul (using HTTP API)
+          curl -s -X PUT "http://localhost:8500/v1/kv/redirector/config" \
+            -d "$CONFIG_YAML"
           echo "Consul setup complete"
 
-          # etcd
-          etcdctl put /redirector/config "$CONFIG_YAML"
+          # etcd (using HTTP API with base64 encoding)
+          KEY_BASE64=$(echo -n "/redirector/config" | base64)
+          VALUE_BASE64=$(echo -n "$CONFIG_YAML" | base64)
+          curl -s -X POST "http://localhost:2379/v3/kv/put" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\": \"$KEY_BASE64\", \"value\": \"$VALUE_BASE64\"}"
           echo "etcd setup complete"
 
       - name: Run integration tests
@@ -202,15 +132,15 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
-          STORAGE_EMULATOR_HOST: http://localhost:4443
         run: |
           go test -tags=integration -v ./test/integration/...
 
-      - name: Upload test results
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker-compose -f test/integration/docker-compose.yml logs
+
+      - name: Stop integration test infrastructure
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-test-results
-          path: |
-            test/integration/*.log
-          retention-days: 7
+        run: |
+          docker-compose -f test/integration/docker-compose.yml down -v

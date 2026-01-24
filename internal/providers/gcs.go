@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -38,6 +39,10 @@ type GCSSourceConfig struct {
 	// CredentialsJSON is the raw service account JSON (optional, alternative to file)
 	// Use environment variable: ${GCS_CREDENTIALS}
 	CredentialsJSON string `yaml:"credentials_json" json:"credentials_json"`
+
+	// Endpoint overrides the default GCS endpoint (useful for emulators)
+	// For fake-gcs-server, use: http://localhost:4443/storage/v1/
+	Endpoint string `yaml:"endpoint" json:"endpoint"`
 
 	// PollInterval for checking changes (default: 5m)
 	PollInterval time.Duration `yaml:"poll_interval" json:"poll_interval"`
@@ -89,6 +94,10 @@ func NewGCSSourceFromMap(cfg map[string]interface{}) (Source, error) {
 		}
 	}
 
+	if endpoint, ok := cfg["endpoint"].(string); ok {
+		sourceCfg.Endpoint = endpoint
+	}
+
 	return NewGCSSource(context.Background(), sourceCfg)
 }
 
@@ -107,7 +116,14 @@ func NewGCSSource(ctx context.Context, cfg GCSSourceConfig) (*GCSSource, error) 
 	// Build client options
 	var opts []option.ClientOption
 
-	if cfg.CredentialsFile != "" {
+	// For emulator/testing - use custom endpoint without authentication
+	if cfg.Endpoint != "" {
+		opts = append(opts, option.WithEndpoint(cfg.Endpoint))
+		opts = append(opts, option.WithoutAuthentication())
+	} else if os.Getenv("STORAGE_EMULATOR_HOST") != "" {
+		// When using the storage emulator, don't require authentication
+		opts = append(opts, option.WithoutAuthentication())
+	} else if cfg.CredentialsFile != "" {
 		opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile))
 	} else if cfg.CredentialsJSON != "" {
 		opts = append(opts, option.WithCredentialsJSON([]byte(cfg.CredentialsJSON)))

@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Integration test infrastructure for The Redirector
 # All services are free and don't require cloud accounts
 
@@ -30,7 +28,7 @@ services:
       - "10000:10000"  # Blob service
       - "10001:10001"  # Queue service
       - "10002:10002"  # Table service
-    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "10000"]
       interval: 5s
@@ -43,7 +41,7 @@ services:
     image: fsouza/fake-gcs-server:latest
     ports:
       - "4443:4443"
-    command: ["-scheme", "http", "-port", "4443", "-external-url", "http://localhost:4443"]
+    command: ["-scheme", "http", "-port", "4443", "-external-url", "http://localhost:4443", "-public-host", "localhost:4443"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:4443/storage/v1/b"]
       interval: 5s
@@ -67,14 +65,21 @@ services:
   # etcd - Distributed KV Store
   # https://etcd.io/
   etcd:
-    image: quay.io/coreos/etcd:v3.5.9
+    image: gcr.io/etcd-development/etcd:v3.5.9
     ports:
       - "2379:2379"
       - "2380:2380"
-    environment:
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_ADVERTISE_CLIENT_URLS=http://localhost:2379
-      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+    command:
+      - /usr/local/bin/etcd
+      - --name=node1
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://localhost:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=node1=http://etcd:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=etcd-cluster
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 5s
