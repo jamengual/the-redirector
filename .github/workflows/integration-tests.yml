@@ -117,9 +117,9 @@ jobs:
             -d "$CONFIG_YAML"
           echo "Consul setup complete"
 
-          # etcd (using HTTP API with base64 encoding)
-          KEY_BASE64=$(echo -n "/redirector/config" | base64)
-          VALUE_BASE64=$(echo -n "$CONFIG_YAML" | base64)
+          # etcd (using HTTP API with base64 encoding, -w 0 prevents line wrapping)
+          KEY_BASE64=$(echo -n "/redirector/config" | base64 -w 0)
+          VALUE_BASE64=$(echo -n "$CONFIG_YAML" | base64 -w 0)
           curl -s -X POST "http://localhost:2379/v3/kv/put" \
             -H "Content-Type: application/json" \
             -d "{\"key\": \"$KEY_BASE64\", \"value\": \"$VALUE_BASE64\"}"
