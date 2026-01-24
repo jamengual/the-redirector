@@ -51,7 +51,7 @@ linters:
       # Prealloc suggestions are optional optimizations
       - linters:
           - prealloc
-        text: "Consider pre-allocating"
+        text: "Consider preallocating"
       # Deprecated GCS credential functions - tracked for future migration
       - path: internal/providers/gcs\.go
         linters:
