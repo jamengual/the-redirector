@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -205,6 +206,139 @@ func TestCollector_Reset(t *testing.T) {
 	if summary.TotalErrors != 0 {
 		t.Errorf("Expected 0 errors after reset, got %d", summary.TotalErrors)
 	}
+}
+
+func TestCollector_ConcurrentRecords(t *testing.T) {
+	cfg := Config{
+		Enabled:      true,
+		BufferSize:   100,
+		SamplingRate: 1.0,
+	}
+
+	c := NewCollector(cfg)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				c.Record(RequestRecord{
+					Timestamp: time.Now(),
+					Path:      "/test",
+					Status:    301,
+					RuleID:    "rule-1",
+					LatencyUs: int64(idx*100 + j),
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	summary := c.GetSummary()
+	if summary.TotalRequests != 5000 {
+		t.Errorf("Expected 5000 requests, got %d", summary.TotalRequests)
+	}
+}
+
+func TestCollector_ConcurrentRecordAndRead(t *testing.T) {
+	cfg := Config{
+		Enabled:      true,
+		BufferSize:   50,
+		SamplingRate: 1.0,
+	}
+
+	c := NewCollector(cfg)
+
+	var wg sync.WaitGroup
+
+	// Writers: concurrent Record calls
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				c.Record(RequestRecord{
+					Timestamp: time.Now(),
+					Path:      "/test",
+					Status:    301,
+					RuleID:    "rule-1",
+					LatencyUs: int64(idx*100 + j),
+				})
+			}
+		}(i)
+	}
+
+	// Readers: concurrent GetSummary and GetRecentRequests calls
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_ = c.GetSummary()
+				_ = c.GetRecentRequests(10)
+			}
+		}()
+	}
+
+	// More readers: concurrent GetRuleStats
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				c.GetRuleStats("rule-1")
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	summary := c.GetSummary()
+	if summary.TotalRequests != 2000 {
+		t.Errorf("Expected 2000 requests, got %d", summary.TotalRequests)
+	}
+}
+
+func TestCollector_ConcurrentEnableDisable(t *testing.T) {
+	cfg := Config{
+		Enabled:      true,
+		BufferSize:   100,
+		SamplingRate: 1.0,
+	}
+
+	c := NewCollector(cfg)
+
+	var wg sync.WaitGroup
+
+	// Toggle enable/disable while recording
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			c.Disable()
+			c.Enable()
+		}
+	}()
+
+	// Concurrent records
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				c.Record(RequestRecord{
+					Timestamp: time.Now(),
+					Path:      "/test",
+					Status:    301,
+					LatencyUs: 100,
+				})
+			}
+		}()
+	}
+
+	wg.Wait()
+	// No race condition panic = pass
 }
 
 func TestCollector_LatencyBuckets(t *testing.T) {

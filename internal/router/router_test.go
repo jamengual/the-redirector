@@ -1,6 +1,7 @@
 package router
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/jamengual/the-redirector/internal/config"
@@ -248,6 +249,86 @@ func TestRouter_Stats(t *testing.T) {
 	if stats.TotalRules != 4 {
 		t.Errorf("Expected 4 total rules, got %d", stats.TotalRules)
 	}
+}
+
+// Benchmarks
+
+func TestRouter_ConcurrentReads(t *testing.T) {
+	preserveQuery := true
+	rules := []config.Rule{
+		{ID: "exact-1", Match: config.Match{Type: config.MatchTypeExact, Path: "/a"}, Redirect: config.Redirect{To: "https://example.com/a", Status: 301, PreserveQuery: &preserveQuery}},
+		{ID: "exact-2", Match: config.Match{Type: config.MatchTypeExact, Path: "/b"}, Redirect: config.Redirect{To: "https://example.com/b", Status: 301, PreserveQuery: &preserveQuery}},
+		{ID: "prefix-1", Match: config.Match{Type: config.MatchTypePrefix, Path: "/api/"}, Redirect: config.Redirect{To: "https://api.example.com/", Status: 301, PreserveQuery: &preserveQuery}},
+	}
+
+	cfg := &config.Config{Rules: rules}
+	_ = cfg.Validate()
+
+	r, err := New(cfg.Rules)
+	if err != nil {
+		t.Fatalf("Failed to create router: %v", err)
+	}
+
+	paths := []string{"/a", "/b", "/api/v1/users", "/nonexistent"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				path := paths[(idx+j)%len(paths)]
+				rule, _ := r.Match("", path)
+				// Verify results are consistent
+				switch path {
+				case "/a":
+					if rule == nil || rule.ID != "exact-1" {
+						t.Errorf("Expected exact-1 for /a")
+					}
+				case "/b":
+					if rule == nil || rule.ID != "exact-2" {
+						t.Errorf("Expected exact-2 for /b")
+					}
+				case "/api/v1/users":
+					if rule == nil || rule.ID != "prefix-1" {
+						t.Errorf("Expected prefix-1 for /api/v1/users")
+					}
+				case "/nonexistent":
+					if rule != nil {
+						t.Errorf("Expected nil for /nonexistent")
+					}
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestRouter_ConcurrentGetStats(t *testing.T) {
+	rules := []config.Rule{
+		{ID: "exact-1", Match: config.Match{Type: config.MatchTypeExact, Path: "/a"}},
+		{ID: "prefix-1", Match: config.Match{Type: config.MatchTypePrefix, Path: "/api/"}},
+	}
+
+	r, err := New(rules)
+	if err != nil {
+		t.Fatalf("Failed to create router: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				stats := r.GetStats()
+				if stats.TotalRules != 2 {
+					t.Errorf("Expected 2 total rules, got %d", stats.TotalRules)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // Benchmarks

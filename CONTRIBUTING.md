@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later
 - Docker (optional, for container builds)
 - k6 (optional, for load testing)
 - golangci-lint (optional, for linting)
@@ -250,22 +250,16 @@ type Source interface {
 | Source | Status | Maintainer |
 |--------|--------|------------|
 | `file` | Stable | Core Team |
-| `s3` | Planned | - |
-| `github` | Planned | - |
-| `consul` | Planned | - |
-| `etcd` | Planned | - |
-
-## Wanted Contributions
-
-We're actively looking for contributors to implement:
-
-- **AWS S3** - S3 bucket configuration with ETag-based change detection
-- **GitHub/GitLab** - Git repository with webhook support
-- **HashiCorp Consul** - Consul KV store with watch support
-- **etcd** - etcd v3 with watch support
-- **Azure Blob Storage** - Azure storage account
-- **GCP Cloud Storage** - Google Cloud Storage
-- **HTTP** - Generic HTTP endpoint with polling
+| `http` | Stable | Core Team |
+| `s3` | Stable | Core Team |
+| `parameterstore` | Stable | Core Team |
+| `secretsmanager` | Stable | Core Team |
+| `azureblob` | Stable | Core Team |
+| `gcs` | Stable | Core Team |
+| `github` | Stable | Core Team |
+| `gitlab` | Stable | Core Team |
+| `consul` | Stable | Core Team |
+| `etcd` | Stable | Core Team |
 
 ## Pull Request Guidelines
 

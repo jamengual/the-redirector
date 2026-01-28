@@ -654,7 +654,7 @@ Integration tests (`test/integration/providers_test.go`) cover: S3, Parameter St
 ## Technology Stack
 
 ### Core
-- **Language**: Go 1.21+
+- **Language**: Go 1.25+
 - **HTTP Server**: `github.com/valyala/fasthttp`
 - **Router**: Custom implementation with radix-like efficiency
 

@@ -1,7 +1,13 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jamengual/the-redirector/internal/config"
@@ -303,5 +309,332 @@ func TestSyncer_MergeReport(t *testing.T) {
 		if src.Name == "source2" && src.RuleCount != 1 {
 			t.Errorf("Expected source2 to have 1 rule, got %d", src.RuleCount)
 		}
+	}
+}
+
+// computeGitHubSignature generates a valid X-Hub-Signature-256 value.
+func computeGitHubSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestWebhookHandler_ValidGitHubSignature(t *testing.T) {
+	secret := "test-webhook-secret"
+	body := []byte(`{"ref":"refs/heads/main"}`)
+	sig := computeGitHubSignature(secret, body)
+
+	s := &Syncer{
+		cfg: &Config{
+			Merge: MergeConfig{ConflictResolution: "error"},
+		},
+		sourceConfigs: []SourceConfig{
+			{Name: "source1", Priority: 10},
+		},
+		sources: []providers.Source{
+			&mockSource{
+				name: "source1",
+				config: &config.Config{
+					Rules: []config.Rule{
+						{ID: "rule1", Match: config.Match{Path: "/test"}},
+					},
+				},
+			},
+		},
+	}
+
+	handler := NewWebhookHandler(s, secret)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", sig)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebhookHandler_InvalidGitHubSignature(t *testing.T) {
+	secret := "test-webhook-secret"
+	body := []byte(`{"ref":"refs/heads/main"}`)
+
+	handler := NewWebhookHandler(&Syncer{cfg: &Config{}}, secret)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403, got %d", w.Code)
+	}
+}
+
+func TestWebhookHandler_MissingGitHubSignature(t *testing.T) {
+	secret := "test-webhook-secret"
+	body := []byte(`{"ref":"refs/heads/main"}`)
+
+	handler := NewWebhookHandler(&Syncer{cfg: &Config{}}, secret)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	// No X-Hub-Signature-256 header
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403, got %d", w.Code)
+	}
+}
+
+func TestWebhookHandler_ValidGitLabToken(t *testing.T) {
+	secret := "test-gitlab-token"
+	body := []byte(`{"object_kind":"push"}`)
+
+	s := &Syncer{
+		cfg: &Config{
+			Merge: MergeConfig{ConflictResolution: "error"},
+		},
+		sourceConfigs: []SourceConfig{
+			{Name: "source1", Priority: 10},
+		},
+		sources: []providers.Source{
+			&mockSource{
+				name: "source1",
+				config: &config.Config{
+					Rules: []config.Rule{
+						{ID: "rule1", Match: config.Match{Path: "/test"}},
+					},
+				},
+			},
+		},
+	}
+
+	handler := NewWebhookHandler(s, secret)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Push Hook")
+	req.Header.Set("X-Gitlab-Token", secret)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebhookHandler_InvalidGitLabToken(t *testing.T) {
+	secret := "test-gitlab-token"
+	body := []byte(`{"object_kind":"push"}`)
+
+	handler := NewWebhookHandler(&Syncer{cfg: &Config{}}, secret)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Push Hook")
+	req.Header.Set("X-Gitlab-Token", "wrong-token")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403, got %d", w.Code)
+	}
+}
+
+func TestWebhookHandler_NoSecretSkipsValidation(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main"}`)
+
+	s := &Syncer{
+		cfg: &Config{
+			Merge: MergeConfig{ConflictResolution: "error"},
+		},
+		sourceConfigs: []SourceConfig{
+			{Name: "source1", Priority: 10},
+		},
+		sources: []providers.Source{
+			&mockSource{
+				name: "source1",
+				config: &config.Config{
+					Rules: []config.Rule{
+						{ID: "rule1", Match: config.Match{Path: "/test"}},
+					},
+				},
+			},
+		},
+	}
+
+	// No secret configured - validation should be skipped
+	handler := NewWebhookHandler(s, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 when no secret configured, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebhookHandler_MethodNotAllowed(t *testing.T) {
+	handler := NewWebhookHandler(&Syncer{cfg: &Config{}}, "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected 405, got %d", w.Code)
+	}
+}
+
+func TestValidateGitHubSignature(t *testing.T) {
+	secret := "my-secret"
+	body := []byte("test payload")
+
+	tests := []struct {
+		name      string
+		signature string
+		wantErr   bool
+	}{
+		{
+			name:      "valid signature",
+			signature: computeGitHubSignature(secret, body),
+			wantErr:   false,
+		},
+		{
+			name:      "empty signature",
+			signature: "",
+			wantErr:   true,
+		},
+		{
+			name:      "missing prefix",
+			signature: "abc123",
+			wantErr:   true,
+		},
+		{
+			name:      "invalid hex",
+			signature: "sha256=zzzz",
+			wantErr:   true,
+		},
+		{
+			name:      "wrong signature",
+			signature: "sha256=" + hex.EncodeToString([]byte("wrong")),
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGitHubSignature(secret, tt.signature, body)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateGitLabToken(t *testing.T) {
+	secret := "my-gitlab-token"
+
+	tests := []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{
+			name:    "valid token",
+			token:   secret,
+			wantErr: false,
+		},
+		{
+			name:    "empty token",
+			token:   "",
+			wantErr: true,
+		},
+		{
+			name:    "wrong token",
+			token:   "wrong-token",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGitLabToken(secret, tt.token)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSyncer_NilConfigFromFetch(t *testing.T) {
+	s := &Syncer{
+		cfg: &Config{
+			Merge: MergeConfig{
+				ConflictResolution: "error",
+			},
+		},
+		sourceConfigs: []SourceConfig{
+			{Name: "nil-source", Priority: 10},
+			{Name: "good-source", Prefix: "good", Priority: 20},
+		},
+		sources: []providers.Source{
+			&mockSource{
+				name:   "nil-source",
+				config: nil, // Returns nil config with nil error
+				err:    nil,
+			},
+			&mockSource{
+				name: "good-source",
+				config: &config.Config{
+					Rules: []config.Rule{
+						{ID: "rule1", Match: config.Match{Path: "/test"}},
+					},
+				},
+			},
+		},
+	}
+
+	cfg, err := s.fetchAndMerge(context.Background())
+	if err != nil {
+		t.Fatalf("fetchAndMerge should not fail, got: %v", err)
+	}
+
+	// Should have only the good source's rule
+	if len(cfg.Rules) != 1 {
+		t.Errorf("Expected 1 rule from good source, got %d", len(cfg.Rules))
+	}
+
+	// Check report recorded the nil-source error
+	report := s.GetLastReport()
+	if report == nil {
+		t.Fatal("Expected merge report")
+	}
+
+	foundNilError := false
+	for _, src := range report.Sources {
+		if src.Name == "nil-source" && src.Error != "" {
+			foundNilError = true
+		}
+	}
+	if !foundNilError {
+		t.Error("Expected nil-source to have an error in the merge report")
 	}
 }

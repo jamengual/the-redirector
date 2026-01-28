@@ -199,7 +199,10 @@ func (a *GitHubAppAuth) exchangeForInstallationToken(ctx context.Context, signed
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			log.Debug().Err(readErr).Msg("GitHub: failed to read error response body")
+		}
 		return "", time.Time{}, fmt.Errorf("GitHub token exchange returned %d: %s", resp.StatusCode, string(body))
 	}
 

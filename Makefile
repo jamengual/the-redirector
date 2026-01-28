@@ -1,4 +1,4 @@
-.PHONY: all build test bench lint clean docker run help integration-test integration-up integration-down
+.PHONY: all build build-all test bench lint clean docker run help integration-test integration-up integration-down
 
 # Variables
 BINARY_NAME=redirector
@@ -17,11 +17,19 @@ all: lint test build
 
 ## Build
 
-build: ## Build the binary
+build: ## Build the redirector binary
 	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/redirector
 
-build-linux: ## Build for Linux (useful for Docker)
-	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/redirector
+build-all: ## Build all binaries (redirector, redirector-lint, redirector-tui, config-syncer)
+	$(GOBUILD) $(LDFLAGS) -o bin/redirector ./cmd/redirector
+	$(GOBUILD) $(LDFLAGS) -o bin/redirector-lint ./cmd/redirector-lint
+	$(GOBUILD) $(LDFLAGS) -o bin/redirector-tui ./cmd/redirector-tui
+	$(GOBUILD) $(LDFLAGS) -o bin/config-syncer ./cmd/config-syncer
+
+build-linux: ## Build all binaries for Linux
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/redirector-linux-amd64 ./cmd/redirector
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/redirector-lint-linux-amd64 ./cmd/redirector-lint
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/config-syncer-linux-amd64 ./cmd/config-syncer
 
 ## Testing
 
@@ -39,14 +47,14 @@ test-coverage: ## Run tests with coverage report
 ## Integration Testing
 
 integration-up: ## Start integration test infrastructure
-	docker-compose -f test/integration/docker-compose.yml up -d
+	docker compose -f test/integration/docker compose.yml up -d
 	@echo "Waiting for services to be ready..."
 	@sleep 15
 	@chmod +x test/integration/setup.sh
 	./test/integration/setup.sh
 
 integration-down: ## Stop integration test infrastructure
-	docker-compose -f test/integration/docker-compose.yml down -v
+	docker compose -f test/integration/docker compose.yml down -v
 
 integration-test: integration-up ## Run integration tests (starts infrastructure if needed)
 	AWS_ACCESS_KEY_ID=test \
