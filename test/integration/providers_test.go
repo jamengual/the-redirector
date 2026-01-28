@@ -12,6 +12,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -292,6 +295,161 @@ func TestEtcdSource_Integration(t *testing.T) {
 	if len(cfg.Rules) == 0 {
 		t.Error("expected at least one rule")
 	}
+}
+
+func TestGitHubSource_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Mock GitHub API server
+	mux := http.NewServeMux()
+
+	// Repository endpoint (Validate)
+	mux.HandleFunc("/repos/test-org/test-repo", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"full_name": "test-org/test-repo",
+			"private":   false,
+		})
+	})
+
+	// Releases endpoint (Fetch with release strategy)
+	mux.HandleFunc("/repos/test-org/test-repo/releases", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"tag_name":   "v1.2.0",
+				"prerelease": false,
+				"draft":      false,
+			},
+			{
+				"tag_name":   "v1.1.0-rc1",
+				"prerelease": true,
+				"draft":      false,
+			},
+		})
+	})
+
+	// Branches endpoint (Fetch with branch strategy)
+	mux.HandleFunc("/repos/test-org/test-repo/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"commit": map[string]interface{}{
+				"sha": "abc123def456",
+			},
+		})
+	})
+
+	// Tags endpoint
+	mux.HandleFunc("/repos/test-org/test-repo/tags", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"name": "v1.2.0", "commit": map[string]interface{}{"sha": "abc123"}},
+			{"name": "config-3.0", "commit": map[string]interface{}{"sha": "def456"}},
+		})
+	})
+
+	// Contents endpoint (config file)
+	mux.HandleFunc("/repos/test-org/test-repo/contents/config.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.github.raw")
+		w.Header().Set("ETag", `"etag-integration-test"`)
+		w.Write([]byte(testConfigYAML))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	t.Run("validate", func(t *testing.T) {
+		source, err := providers.Registry.Create("github", map[string]interface{}{
+			"repository": "test-org/test-repo",
+			"base_url":   server.URL,
+			"token":      "test-pat-token",
+		})
+		if err != nil {
+			t.Fatalf("failed to create GitHub source: %v", err)
+		}
+		defer source.Close()
+
+		if err := source.Validate(ctx); err != nil {
+			t.Fatalf("Validate failed: %v", err)
+		}
+	})
+
+	t.Run("fetch with release strategy", func(t *testing.T) {
+		source, err := providers.Registry.Create("github", map[string]interface{}{
+			"repository":  "test-org/test-repo",
+			"base_url":    server.URL,
+			"token":       "test-pat-token",
+			"strategy":    "release",
+			"environment": "production",
+		})
+		if err != nil {
+			t.Fatalf("failed to create GitHub source: %v", err)
+		}
+		defer source.Close()
+
+		cfg, err := source.Fetch(ctx)
+		if err != nil {
+			t.Fatalf("Fetch failed: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if len(cfg.Rules) == 0 {
+			t.Error("expected at least one rule")
+		}
+	})
+
+	t.Run("fetch with branch strategy", func(t *testing.T) {
+		source, err := providers.Registry.Create("github", map[string]interface{}{
+			"repository":  "test-org/test-repo",
+			"base_url":    server.URL,
+			"token":       "test-pat-token",
+			"strategy":    "branch",
+			"environment": "production",
+		})
+		if err != nil {
+			t.Fatalf("failed to create GitHub source: %v", err)
+		}
+		defer source.Close()
+
+		cfg, err := source.Fetch(ctx)
+		if err != nil {
+			t.Fatalf("Fetch failed: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if len(cfg.Rules) == 0 {
+			t.Error("expected at least one rule")
+		}
+	})
+
+	t.Run("fetch with tag strategy and pattern", func(t *testing.T) {
+		source, err := providers.Registry.Create("github", map[string]interface{}{
+			"repository":  "test-org/test-repo",
+			"base_url":    server.URL,
+			"token":       "test-pat-token",
+			"strategy":    "tag",
+			"tag_pattern": "v*",
+		})
+		if err != nil {
+			t.Fatalf("failed to create GitHub source: %v", err)
+		}
+		defer source.Close()
+
+		cfg, err := source.Fetch(ctx)
+		if err != nil {
+			t.Fatalf("Fetch failed: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected config, got nil")
+		}
+	})
 }
 
 // TestWatch_Integration tests the watch functionality for providers that support it

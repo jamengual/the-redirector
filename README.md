@@ -732,13 +732,14 @@ targets:
 | Source | Type | Description |
 |--------|------|-------------|
 | File | `file` | Local filesystem (YAML, JSON) |
+| HTTP/HTTPS | `http` | HTTP endpoint with bearer/basic auth, ETag caching |
 | AWS S3 | `s3` | S3 bucket with IAM/cross-account support |
 | AWS Parameter Store | `parameterstore` | SSM parameters (single or hierarchy) |
 | AWS Secrets Manager | `secretsmanager` | Secrets with rotation support |
 | Azure Blob Storage | `azureblob` | Azure Storage with SAS/DefaultCredential |
 | GCP Cloud Storage | `gcs` | GCS with Application Default Credentials |
-| GitHub | `github` | GitHub repos (releases, branches, tags) |
-| GitLab | `gitlab` | GitLab repos with webhook support |
+| GitHub | `github` | GitHub repos (PAT or GitHub App auth, release/branch/tag strategies, tag pattern glob matching) |
+| GitLab | `gitlab` | GitLab repos (PAT/OAuth2, releases/branches/tags with pattern matching) |
 | HashiCorp Consul | `consul` | Consul KV with native watch |
 | etcd | `etcd` | etcd KV with native watch |
 
@@ -796,6 +797,27 @@ sources:
       # Auth: Uses Application Default Credentials by default
       # Or: credentials_file: /path/to/service-account.json
 ```
+
+#### HTTP/HTTPS Endpoint Example
+
+```yaml
+sources:
+  - name: http-config
+    type: http
+    config:
+      url: https://config-server.internal/redirector/config.yaml
+      bearer_token: ${CONFIG_SERVER_TOKEN}
+      # Or basic auth:
+      # basic_auth:
+      #   username: admin
+      #   password: ${CONFIG_PASSWORD}
+      timeout: 10s
+      poll_interval: 30s
+      headers:
+        X-Custom-Header: "my-value"
+```
+
+The HTTP provider supports ETag-based caching. If the server returns an `ETag` header, subsequent requests include `If-None-Match` to avoid re-downloading unchanged configurations.
 
 #### GitLab Example
 
@@ -983,7 +1005,7 @@ the-redirector/
 │   ├── stats/               # Ring buffer stats
 │   ├── lint/                # Linting rules
 │   ├── logging/             # Log rotation
-│   └── providers/           # Config sources (file, GitHub, etc.)
+│   └── providers/           # Config sources (file, http, github, gitlab, s3, etc.)
 ├── pkg/redirect/            # Public types
 ├── config.yaml              # Sample configuration
 ├── syncer.yaml              # Sample syncer configuration
@@ -1047,9 +1069,14 @@ See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed status.
 - Prometheus metrics endpoint
 - Hot reload with fsnotify
 - Full AWS S3/Parameter Store/Secrets Manager integration
-- Azure, GCP, GitLab, Consul, etcd integrations
+- Azure Blob, GCP Cloud Storage, Consul, etcd integrations
+- GitHub integration (PAT + GitHub App JWT auth, release/branch/tag strategies, tag pattern matching)
+- GitLab integration (PAT, OAuth2 with auto token refresh, release/branch/tag strategies, tag pattern matching)
+- HTTP/HTTPS endpoint provider (bearer/basic auth, ETag caching, custom headers)
 - OpenTelemetry tracing
 - Load testing infrastructure
+- Config-syncer refactored to use provider Registry (no duplicate source implementations)
+- Comprehensive test coverage across all providers (unit + integration)
 
 **Upcoming:**
 - Multi-tenancy support

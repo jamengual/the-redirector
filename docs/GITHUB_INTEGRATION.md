@@ -98,6 +98,42 @@ After installation, note:
 - **App ID**: Found on the App settings page
 - **Installation ID**: Found in the URL after installing (e.g., `/installations/12345678`)
 
+## Authentication Methods
+
+### Method 1: Personal Access Token (PAT) - Simplest
+
+Best for small teams or development environments.
+
+```yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    token: ${GITHUB_TOKEN}
+```
+
+### Method 2: GitHub App - Recommended for Production
+
+Best for production. Tokens auto-rotate, permissions are fine-grained, and the App is not tied to a user.
+
+```yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    app:
+      app_id: 123456
+      installation_id: 12345678
+      private_key_path: /secrets/github-app-key.pem
+      # Or inline: private_key: ${GITHUB_APP_PRIVATE_KEY}
+```
+
+The provider handles the full GitHub App auth flow:
+1. Loads the RSA private key (PKCS1 or PKCS8 PEM format)
+2. Creates a JWT signed with RS256 (iss=AppID, 10min expiry)
+3. Exchanges JWT for an installation access token via `POST /app/installations/{id}/access_tokens`
+4. Caches the token and auto-refreshes 5 minutes before expiry
+
 ## Configuration
 
 ### Config-Syncer Configuration
@@ -113,10 +149,14 @@ sources:
     strategy: release
     environment: production
 
+    # Auth option 1: PAT
+    token: ${GITHUB_TOKEN}
+
+    # Auth option 2: GitHub App
     app:
       app_id: 123456
       installation_id: 12345678
-      private_key: ${GITHUB_APP_PRIVATE_KEY}
+      private_key_path: /secrets/github-app-key.pem
 
     webhook_secret: ${GITHUB_WEBHOOK_SECRET}
 
@@ -130,8 +170,11 @@ targets:
 ### Environment Variables
 
 ```bash
-# GitHub App private key (PEM format, base64 encoded for env var)
-export GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem | base64)"
+# For PAT auth
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+
+# For GitHub App auth - private key as PEM string
+export GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)"
 
 # Webhook secret for validating payloads
 export GITHUB_WEBHOOK_SECRET="your-webhook-secret"
@@ -182,7 +225,29 @@ sources:
 | staging | staging |
 | development | develop |
 
-### Strategy 3: Pre-release (Staging with Releases)
+### Strategy 3: Tag-Based with Pattern Matching
+
+Deploy when a tag matching a glob pattern is created.
+
+```yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    strategy: tag
+    tag_pattern: "v*"           # Only deploy on tags starting with "v"
+```
+
+**Pattern examples:**
+| Pattern | Matches | Doesn't Match |
+|---------|---------|---------------|
+| `v*` | `v1.0.0`, `v2.0-rc1` | `release-1.0`, `latest` |
+| `config-*` | `config-1.0`, `config-prod` | `v1.0`, `release` |
+| `release-[0-9]*` | `release-1`, `release-23` | `release-beta` |
+
+Without `tag_pattern`, the latest tag (by date) is always used. With a pattern, only tags matching the glob are considered.
+
+### Strategy 4: Pre-release (Staging with Releases)
 
 Use GitHub pre-releases for staging.
 
@@ -293,8 +358,10 @@ func validateWebhook(payload []byte, signature, secret string) bool {
 | Event | Action | Strategy | Result |
 |-------|--------|----------|--------|
 | `release` | `published` | release | Deploy new release |
-| `push` | - | branch | Deploy branch update |
-| `create` | ref_type=tag | tag | Deploy new tag |
+| `push` | - | branch | Deploy branch update (only if matching env branch) |
+| `create` | ref_type=tag | tag | Deploy new tag (filtered by `tag_pattern` if set) |
+
+When `tag_pattern` is configured, only tags matching the glob pattern trigger deployment. Non-matching tag creation events are silently ignored.
 
 ## Release Workflow
 

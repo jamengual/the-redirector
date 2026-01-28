@@ -17,6 +17,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamengual/the-redirector/internal/providers"
 )
 
 // SyncerConfig configures the config syncer service.
@@ -427,31 +429,165 @@ func NewSyncer(cfg *SyncerConfig) *Syncer {
 }
 
 func (s *Syncer) createSource(cfg SourceConfig) ConfigSource {
+	// Build the config map for the provider Registry
+	configMap := sourceConfigToMap(cfg)
+	if configMap == nil {
+		log.Warn().Str("type", cfg.Type).Str("name", cfg.Name).Msg("No configuration for source type")
+		return nil
+	}
+
+	// Map source type names to registry names where they differ
+	registryType := cfg.Type
+	switch cfg.Type {
+	case "azure":
+		registryType = "azureblob"
+	case "parameter_store":
+		registryType = "parameterstore"
+	case "secrets_manager":
+		registryType = "secretsmanager"
+	}
+
+	source, err := providers.Registry.Create(registryType, configMap)
+	if err != nil {
+		log.Error().Err(err).Str("type", cfg.Type).Str("name", cfg.Name).Msg("Failed to create source from Registry")
+		return nil
+	}
+
+	return &providerAdapter{
+		source:   source,
+		name:     cfg.Name,
+		priority: cfg.Priority,
+	}
+}
+
+// providerAdapter wraps a providers.Source to implement the cmd's ConfigSource interface.
+// providers.Source.Fetch returns *config.Config; ConfigSource.Fetch returns []byte.
+type providerAdapter struct {
+	source   providers.Source
+	name     string
+	priority int
+}
+
+func (a *providerAdapter) Name() string  { return a.name }
+func (a *providerAdapter) Priority() int { return a.priority }
+
+func (a *providerAdapter) Fetch(ctx context.Context) ([]byte, error) {
+	cfg, err := a.source.Fetch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(cfg)
+}
+
+func (a *providerAdapter) Validate(ctx context.Context) error {
+	return a.source.Validate(ctx)
+}
+
+// sourceConfigToMap converts a typed SourceConfig into a map[string]interface{}
+// suitable for the provider Registry.
+func sourceConfigToMap(cfg SourceConfig) map[string]interface{} {
 	switch cfg.Type {
 	case "file":
-		if cfg.File != nil {
-			return &fileSource{
-				name:     cfg.Name,
-				priority: cfg.Priority,
-				path:     cfg.File.Path,
+		if cfg.File == nil {
+			return nil
+		}
+		return map[string]interface{}{
+			"path": cfg.File.Path,
+		}
+	case "s3":
+		if cfg.S3 == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"bucket": cfg.S3.Bucket,
+			"key":    cfg.S3.Key,
+		}
+		if cfg.S3.Region != "" {
+			m["region"] = cfg.S3.Region
+		}
+		if cfg.S3.RoleARN != "" {
+			m["role_arn"] = cfg.S3.RoleARN
+		}
+		if cfg.S3.Endpoint != "" {
+			m["endpoint"] = cfg.S3.Endpoint
+		}
+		return m
+	case "azure":
+		if cfg.Azure == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"container": cfg.Azure.ContainerName,
+			"blob_name": cfg.Azure.BlobName,
+		}
+		if cfg.Azure.AccountName != "" {
+			m["storage_account"] = cfg.Azure.AccountName
+		}
+		if cfg.Azure.ConnectionString != "" {
+			m["connection_string"] = cfg.Azure.ConnectionString
+		}
+		if cfg.Azure.UseManagedIdentity {
+			m["use_default_credential"] = true
+		}
+		return m
+	case "github":
+		if cfg.GitHub == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"repository": cfg.GitHub.Owner + "/" + cfg.GitHub.Repo,
+		}
+		if cfg.GitHub.Path != "" {
+			m["path"] = cfg.GitHub.Path
+		}
+		if cfg.GitHub.Strategy != "" {
+			m["strategy"] = cfg.GitHub.Strategy
+		}
+		if cfg.GitHub.Token != "" {
+			m["token"] = cfg.GitHub.Token
+		}
+		if cfg.GitHub.AppID != 0 {
+			m["app"] = map[string]interface{}{
+				"app_id":           float64(cfg.GitHub.AppID),
+				"installation_id":  float64(cfg.GitHub.InstallationID),
+				"private_key_path": cfg.GitHub.PrivateKeyPath,
 			}
 		}
+		return m
 	case "http":
-		if cfg.HTTP != nil {
-			return &httpSource{
-				name:     cfg.Name,
-				priority: cfg.Priority,
-				url:      cfg.HTTP.URL,
-				headers:  cfg.HTTP.Headers,
-				timeout:  cfg.HTTP.Timeout,
-			}
+		if cfg.HTTP == nil {
+			return nil
 		}
-	// Additional sources (S3, Azure, GitHub) would be implemented here
-	// They are stubbed for now - see internal/providers for full implementations
+		m := map[string]interface{}{
+			"url": cfg.HTTP.URL,
+		}
+		if cfg.HTTP.Headers != nil {
+			m["headers"] = cfg.HTTP.Headers
+		}
+		if cfg.HTTP.Timeout != 0 {
+			m["timeout"] = cfg.HTTP.Timeout.String()
+		}
+		if cfg.HTTP.BearerToken != "" {
+			m["bearer_token"] = cfg.HTTP.BearerToken
+		}
+		return m
+	case "parameter_store", "parameterstore":
+		if cfg.ParameterStore == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"name": cfg.ParameterStore.Name,
+		}
+		if cfg.ParameterStore.Region != "" {
+			m["region"] = cfg.ParameterStore.Region
+		}
+		if cfg.ParameterStore.WithDecryption {
+			m["with_decryption"] = true
+		}
+		return m
 	default:
-		log.Warn().Str("type", cfg.Type).Msg("Unknown source type")
+		return nil
 	}
-	return nil
 }
 
 // SyncOnce performs a single sync operation.
@@ -747,52 +883,3 @@ func (s *Syncer) pushToSingleAPI(ctx context.Context, cfg *APIOutputConfig, data
 	return nil
 }
 
-// fileSource implements ConfigSource for local files.
-type fileSource struct {
-	name     string
-	priority int
-	path     string
-}
-
-func (s *fileSource) Name() string  { return s.name }
-func (s *fileSource) Priority() int { return s.priority }
-
-func (s *fileSource) Fetch(ctx context.Context) ([]byte, error) {
-	return os.ReadFile(s.path)
-}
-
-func (s *fileSource) Validate(ctx context.Context) error {
-	info, err := os.Stat(s.path)
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return fmt.Errorf("path is a directory, not a file")
-	}
-	return nil
-}
-
-// httpSource implements ConfigSource for HTTP/HTTPS URLs.
-type httpSource struct {
-	name     string
-	priority int
-	url      string
-	headers  map[string]string
-	timeout  time.Duration
-}
-
-func (s *httpSource) Name() string  { return s.name }
-func (s *httpSource) Priority() int { return s.priority }
-
-func (s *httpSource) Fetch(ctx context.Context) ([]byte, error) {
-	// TODO: Implement HTTP GET with timeout and headers
-	// This is a stub - see internal/providers/http.go for full implementation
-	return nil, fmt.Errorf("HTTP source not yet implemented in syncer")
-}
-
-func (s *httpSource) Validate(ctx context.Context) error {
-	if s.url == "" {
-		return fmt.Errorf("URL is required")
-	}
-	return nil
-}

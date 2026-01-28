@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type GitLabSource struct {
 	// Deployment settings
 	strategy    DeploymentStrategy
 	environment string // maps to branch or release channel
+	tagPattern  string // glob pattern for tag matching (e.g., "v*", "config-*")
 
 	// Auth
 	auth GitLabAuth
@@ -134,9 +136,48 @@ func (a *GitLabOAuthAuth) AddAuth(req *http.Request) error {
 }
 
 func (a *GitLabOAuthAuth) refreshToken(ctx context.Context) error {
-	// Token refresh implementation
-	// POST to TokenURL with grant_type=refresh_token
-	// Update AccessToken and expiresAt
+	data := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {a.RefreshToken},
+		"client_id":     {a.ClientID},
+		"client_secret": {a.ClientSecret},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", a.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("creating refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("refreshing token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("token refresh returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return fmt.Errorf("decoding token response: %w", err)
+	}
+
+	a.AccessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		a.RefreshToken = tokenResp.RefreshToken
+	}
+	a.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+
 	return nil
 }
 
@@ -195,12 +236,18 @@ func NewGitLabSource(cfg map[string]interface{}) (Source, error) {
 		environment = e
 	}
 
+	tagPattern := ""
+	if tp, ok := cfg["tag_pattern"].(string); ok {
+		tagPattern = tp
+	}
+
 	source := &GitLabSource{
 		projectPath: project,
 		filePath:    path,
 		baseURL:     baseURL,
 		strategy:    strategy,
 		environment: environment,
+		tagPattern:  tagPattern,
 		options:     DefaultSourceOptions(),
 		client:      &http.Client{Timeout: 30 * time.Second},
 		webhookChan: make(chan *config.Config, 1),
@@ -376,6 +423,16 @@ func (g *GitLabSource) getLatestTag(ctx context.Context) (string, error) {
 
 	if len(tags) == 0 {
 		return "", fmt.Errorf("no tags found")
+	}
+
+	// Filter by tag pattern if configured
+	if g.tagPattern != "" {
+		for _, tag := range tags {
+			if matched, _ := path.Match(g.tagPattern, tag.Name); matched {
+				return tag.Name, nil
+			}
+		}
+		return "", fmt.Errorf("no tags matching pattern %q found", g.tagPattern)
 	}
 
 	// Return the latest tag (GitLab returns sorted by date desc by default)
@@ -632,7 +689,13 @@ func (g *GitLabSource) handleTagEvent(ctx context.Context, payload []byte) error
 		return nil
 	}
 
-	// TODO: Match against tag pattern
+	// Skip tags that don't match the configured pattern
+	if g.tagPattern != "" {
+		tagName := strings.TrimPrefix(event.Ref, "refs/tags/")
+		if matched, _ := path.Match(g.tagPattern, tagName); !matched {
+			return nil
+		}
+	}
 
 	cfg, err := g.Fetch(ctx)
 	if err != nil {

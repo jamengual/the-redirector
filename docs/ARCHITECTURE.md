@@ -200,20 +200,30 @@ type Syncer struct {
 
 ```go
 type GitHubSource struct {
-    owner      string
-    repo       string
-    path       string
-    branch     string
-    token      string
+    owner       string
+    repo        string
+    path        string
+    strategy    DeploymentStrategy  // release, branch, tag, commit
+    environment string              // maps to branch or release channel
+    tagPattern  string              // glob pattern for tag filtering (e.g., "v*")
 
-    client     *github.Client
-    lastSHA    string
+    // Auth: PAT (GitHubPATAuth) or GitHub App (GitHubAppAuth with JWT + installation tokens)
+    auth        GitHubAuth
+
+    client      *http.Client
+    currentRef  string              // tracks current deployed ref
 }
 
 // Supports both polling and webhook
 func (g *GitHubSource) Watch(ctx context.Context) (<-chan *Config, error) {
     // Option 1: Poll for changes
-    // Option 2: Listen for webhook events
+    // Option 2: Listen for webhook events (release, push, create/tag)
+}
+
+// HandleWebhook processes GitHub webhook events
+func (g *GitHubSource) HandleWebhook(ctx context.Context, eventType string, payload []byte) error {
+    // Dispatches to handleReleaseEvent, handlePushEvent, or handleTagEvent
+    // Tag events are filtered by tagPattern when configured
 }
 ```
 
