@@ -417,7 +417,7 @@ func TestNewGitLabSource_TagPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGitLabSource() error = %v", err)
 	}
-	gl := source.(*GitLabSource)
+	gl, _ := source.(*GitLabSource)
 	if gl.tagPattern != "v*" {
 		t.Errorf("tagPattern = %q, want %q", gl.tagPattern, "v*")
 	}

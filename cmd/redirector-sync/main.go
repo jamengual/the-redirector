@@ -726,7 +726,6 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 	return fmt.Errorf("no sources configured")
 }
 
-
 // Run starts the sync loop.
 func (s *Syncer) Run(ctx context.Context, dryRun bool) {
 	// Initial sync
@@ -1249,4 +1248,3 @@ func printIssue(issue lint.Issue) {
 		fmt.Printf("    %s→ %s%s\n", colorGreen, issue.Suggestion, colorReset)
 	}
 }
-

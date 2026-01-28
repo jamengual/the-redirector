@@ -18,8 +18,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jamengual/the-redirector/internal/config"
 	"github.com/rs/zerolog/log"
+
+	"github.com/jamengual/the-redirector/internal/config"
 )
 
 func init() {

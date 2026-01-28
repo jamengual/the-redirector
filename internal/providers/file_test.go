@@ -229,7 +229,7 @@ func TestFileSource_DefaultPollInterval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource() error = %v", err)
 	}
-	fs := source.(*FileSource)
+	fs, _ := source.(*FileSource)
 	defaults := DefaultSourceOptions()
 	if fs.options.PollInterval != defaults.PollInterval {
 		t.Errorf("PollInterval = %v, want default %v", fs.options.PollInterval, defaults.PollInterval)

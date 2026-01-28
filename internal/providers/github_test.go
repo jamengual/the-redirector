@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/jamengual/the-redirector/internal/config"
 )
 
@@ -243,7 +244,7 @@ func TestGitHubAppAuth_GetToken(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"token":      "ghs_test_installation_token",
 			"expires_at": expiresAt.Format(time.RFC3339),
 		})
@@ -276,7 +277,7 @@ func TestGitHubAppAuth_GetToken_Cached(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"token":      fmt.Sprintf("ghs_token_%d", callCount),
 			"expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339),
 		})
@@ -425,13 +426,13 @@ func TestGitHubSource_Validate(t *testing.T) {
 
 func TestGitHubSource_Fetch_ReleaseStrategy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/test/project/releases":
+		switch r.URL.Path {
+		case "/repos/test/project/releases":
 			// Return releases
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"tag_name": "v1.0.0", "prerelease": false, "draft": false},
 			})
-		case r.URL.Path == "/repos/test/project/contents/config.yaml":
+		case "/repos/test/project/contents/config.yaml":
 			// Return raw config content
 			w.Header().Set("Content-Type", "application/vnd.github.raw")
 			w.Write([]byte(validTestConfig))
@@ -464,14 +465,14 @@ func TestGitHubSource_Fetch_ReleaseStrategy(t *testing.T) {
 
 func TestGitHubSource_Fetch_BranchStrategy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/test/project/branches/main":
-			json.NewEncoder(w).Encode(map[string]interface{}{
+		switch r.URL.Path {
+		case "/repos/test/project/branches/main":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"commit": map[string]interface{}{
 					"sha": "abc123",
 				},
 			})
-		case r.URL.Path == "/repos/test/project/contents/config.yaml":
+		case "/repos/test/project/contents/config.yaml":
 			w.Header().Set("Content-Type", "application/vnd.github.raw")
 			w.Write([]byte(validTestConfig))
 		default:
@@ -717,7 +718,7 @@ func TestNewGitHubSource_TagPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGitHubSource() error = %v", err)
 	}
-	gh := source.(*GitHubSource)
+	gh, _ := source.(*GitHubSource)
 	if gh.tagPattern != "v*" {
 		t.Errorf("tagPattern = %q, want %q", gh.tagPattern, "v*")
 	}
@@ -725,14 +726,14 @@ func TestNewGitHubSource_TagPattern(t *testing.T) {
 
 func TestGitHubSource_Fetch_TagStrategy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/test/project/tags":
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+		switch r.URL.Path {
+		case "/repos/test/project/tags":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"name": "config-2.0", "commit": map[string]interface{}{"sha": "def456"}},
 				{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 				{"name": "config-1.0", "commit": map[string]interface{}{"sha": "aaa111"}},
 			})
-		case r.URL.Path == "/repos/test/project/contents/config.yaml":
+		case "/repos/test/project/contents/config.yaml":
 			w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
