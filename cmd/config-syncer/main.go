@@ -436,6 +436,8 @@ func (s *Syncer) createSource(cfg SourceConfig) ConfigSource {
 		return nil
 	}
 
+	log.Debug().Str("type", cfg.Type).Str("name", cfg.Name).Interface("config_map", redactSecrets(configMap)).Msg("Creating source from config map")
+
 	// Map source type names to registry names where they differ
 	registryType := cfg.Type
 	switch cfg.Type {
@@ -453,11 +455,27 @@ func (s *Syncer) createSource(cfg SourceConfig) ConfigSource {
 		return nil
 	}
 
+	log.Debug().Str("type", cfg.Type).Str("name", cfg.Name).Str("source_name", source.Name()).Msg("Source created successfully")
+
 	return &providerAdapter{
 		source:   source,
 		name:     cfg.Name,
 		priority: cfg.Priority,
 	}
+}
+
+// redactSecrets returns a copy of the map with sensitive fields masked.
+func redactSecrets(m map[string]interface{}) map[string]interface{} {
+	redacted := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		switch k {
+		case "token", "bearer_token", "secret", "private_key", "connection_string":
+			redacted[k] = "***"
+		default:
+			redacted[k] = v
+		}
+	}
+	return redacted
 }
 
 // providerAdapter wraps a providers.Source to implement the cmd's ConfigSource interface.
@@ -542,6 +560,13 @@ func sourceConfigToMap(cfg SourceConfig) map[string]interface{} {
 		}
 		if cfg.GitHub.Strategy != "" {
 			m["strategy"] = cfg.GitHub.Strategy
+		}
+		if cfg.GitHub.Ref != "" {
+			m["environment"] = cfg.GitHub.Ref
+			// Default to branch strategy when ref is set but strategy isn't
+			if cfg.GitHub.Strategy == "" {
+				m["strategy"] = "branch"
+			}
 		}
 		if cfg.GitHub.Token != "" {
 			m["token"] = cfg.GitHub.Token

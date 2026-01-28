@@ -501,6 +501,41 @@ func TestGitHubSource_Fetch_BranchStrategy(t *testing.T) {
 	}
 }
 
+func TestGitHubSource_getFileContent_AcceptHeader(t *testing.T) {
+	// Verify that getFileContent sends "application/vnd.github.raw" Accept header,
+	// not the JSON API header. This ensures we get raw file content instead of
+	// a JSON envelope with base64-encoded content.
+	var receivedAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/test/project/contents/config.yaml" {
+			receivedAccept = r.Header.Get("Accept")
+			w.Write([]byte(validTestConfig))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	source := &GitHubSource{
+		owner:   "test",
+		repo:    "project",
+		path:    "config.yaml",
+		baseURL: server.URL,
+		client:  server.Client(),
+	}
+
+	content, err := source.getFileContent(context.Background(), "main")
+	if err != nil {
+		t.Fatalf("getFileContent() error = %v", err)
+	}
+	if string(content) != validTestConfig {
+		t.Errorf("getFileContent() returned unexpected content")
+	}
+	if receivedAccept != "application/vnd.github.raw" {
+		t.Errorf("Accept header = %q, want %q", receivedAccept, "application/vnd.github.raw")
+	}
+}
+
 func TestGitHubSource_HandleWebhook(t *testing.T) {
 	tests := []struct {
 		name      string

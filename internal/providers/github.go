@@ -19,6 +19,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jamengual/the-redirector/internal/config"
+	"github.com/rs/zerolog/log"
 )
 
 func init() {
@@ -309,15 +310,28 @@ func NewGitHubSource(cfg map[string]interface{}) (Source, error) {
 	}
 
 	// Configure authentication
+	authType := "none"
 	if appCfg, ok := cfg["app"].(map[string]interface{}); ok {
 		auth, err := configureGitHubAppAuth(appCfg)
 		if err != nil {
 			return nil, fmt.Errorf("configuring GitHub App auth: %w", err)
 		}
 		source.auth = auth
+		authType = "github-app"
 	} else if token, ok := cfg["token"].(string); ok && token != "" {
 		source.auth = &GitHubPATAuth{Token: token}
+		authType = "pat"
 	}
+
+	log.Debug().
+		Str("owner", source.owner).
+		Str("repo", source.repo).
+		Str("path", source.path).
+		Str("strategy", string(source.strategy)).
+		Str("environment", source.environment).
+		Str("auth", authType).
+		Str("base_url", source.baseURL).
+		Msg("GitHub: source configured")
 
 	return source, nil
 }
@@ -408,6 +422,14 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 	var ref string
 	var err error
 
+	log.Debug().
+		Str("owner", g.owner).
+		Str("repo", g.repo).
+		Str("path", g.path).
+		Str("strategy", string(g.strategy)).
+		Str("environment", g.environment).
+		Msg("GitHub: starting fetch")
+
 	switch g.strategy {
 	case StrategyRelease:
 		ref, err = g.getLatestRelease(ctx)
@@ -425,15 +447,20 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 		return nil, fmt.Errorf("getting ref: %w", err)
 	}
 
+	log.Debug().Str("ref", ref).Msg("GitHub: resolved ref")
+
 	// Fetch config file content
 	content, err := g.getFileContent(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("fetching config: %w", err)
 	}
 
+	log.Debug().Int("bytes", len(content)).Msg("GitHub: fetched file content")
+
 	// Parse configuration
 	cfg, err := config.ParseBytes(content)
 	if err != nil {
+		log.Debug().Str("content_preview", string(content[:min(len(content), 200)])).Msg("GitHub: content that failed to parse")
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
@@ -441,6 +468,8 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 	g.mu.Lock()
 	g.currentRef = ref
 	g.mu.Unlock()
+
+	log.Debug().Str("ref", ref).Int("rules", len(cfg.Rules)).Msg("GitHub: fetch complete")
 
 	return cfg, nil
 }
@@ -610,6 +639,8 @@ func (g *GitHubSource) getFileContent(ctx context.Context, ref string) ([]byte, 
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
 		g.baseURL, g.owner, g.repo, g.path, ref)
 
+	log.Debug().Str("url", url).Str("ref", ref).Msg("GitHub: fetching file content")
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -662,7 +693,11 @@ func (g *GitHubSource) getFileContent(ctx context.Context, ref string) ([]byte, 
 
 // addAuthHeader adds authentication to the request.
 func (g *GitHubSource) addAuthHeader(ctx context.Context, req *http.Request) error {
-	req.Header.Set("Accept", "application/vnd.github+json")
+	// Only set Accept if the caller hasn't already set it (e.g., getFileContent
+	// sets application/vnd.github.raw to get raw file content).
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/vnd.github+json")
+	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	if g.auth != nil {
