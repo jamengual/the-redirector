@@ -477,6 +477,56 @@ groups:
           summary: "No GitHub webhooks received in 15 minutes"
 ```
 
+## Troubleshooting
+
+### Enable Debug Logging
+
+The config-syncer and GitHub provider support debug-level logging via zerolog. Add `log_level: debug` to your syncer config:
+
+```yaml
+# syncer.yaml
+log_level: debug   # trace, debug, info (default), warn, error, fatal
+
+sources:
+  - name: "github-config"
+    type: github
+    # ...
+```
+
+Debug output includes:
+- **Source creation**: config map (with secrets redacted), auth type, strategy, environment
+- **Fetch flow**: strategy resolution, ref lookup, file URL, content size
+- **Parse diagnostics**: on failure, logs a preview of the fetched content (first 200 chars)
+- **Push retries**: target name, attempt number, backoff delay
+
+### Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `no suitable release found for environment production` | Default strategy is `release` but no GitHub Releases exist | Set `strategy: branch` and `ref: <branch-name>` in your syncer config |
+| `parsing config: validating config: no rules defined` | Fetched content is not valid redirect config YAML | Enable debug logging to see content preview; check your config file has a `rules:` section |
+| `getting auth token: PAT token is empty` | Token env var not set or empty | Verify `${GITHUB_TOKEN}` is exported in your environment |
+| `GitHub API returned 404` | Repository, path, or ref not found | Check owner/repo, file path, and branch/tag name |
+| `GitHub API returned 401` | Invalid or expired token | Regenerate PAT or check GitHub App private key |
+
+### Config-Syncer `ref` Field
+
+When using the config-syncer YAML format, the `ref` field maps to the provider's `environment` parameter. If `ref` is set without an explicit `strategy`, the syncer defaults to `strategy: "branch"`:
+
+```yaml
+sources:
+  - name: "my-config"
+    type: github
+    github:
+      owner: "my-org"
+      repo: "my-config-repo"
+      path: "config.yaml"
+      ref: "main"              # Maps to environment, defaults to branch strategy
+      token: "${GITHUB_TOKEN}"
+```
+
+This is equivalent to setting `strategy: branch` and `environment: main` in the provider config directly.
+
 ## Security Best Practices
 
 1. **Use GitHub App** - Never use personal access tokens in production

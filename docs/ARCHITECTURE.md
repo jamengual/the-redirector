@@ -307,6 +307,24 @@ rollback:
   auto_rollback_on_error: true
 ```
 
+## Observability
+
+### Debug Logging
+
+Both the config-syncer and individual providers support structured debug logging via zerolog. Enable with `log_level: debug` in the syncer config.
+
+The GitHub provider logs at debug level:
+- Source configuration (owner, repo, path, strategy, environment, auth type)
+- Fetch lifecycle (strategy resolution, ref lookup, file content URL, bytes fetched)
+- Parse failures (content preview for diagnosis)
+
+The config-syncer logs at debug level:
+- Source creation (config map with secrets redacted via `redactSecrets()`)
+- Source registry lookups
+- Push retry attempts with backoff delays
+
+Sensitive fields (`token`, `bearer_token`, `secret`, `private_key`, `connection_string`) are automatically redacted in debug output.
+
 ## Deployment Patterns
 
 ### Pattern 1: Sidecar (Kubernetes)

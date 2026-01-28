@@ -234,6 +234,9 @@ This document outlines the phased implementation approach for building The Redir
   - Tag pattern matching (glob filtering in Fetch and HandleWebhook)
   - Validate, Fetch (release/branch/tag strategies), HandleWebhook
 - [x] Integration test (test/integration/providers_test.go)
+- [x] Fixed Accept header overwrite bug: `addAuthHeader()` was overwriting `Accept: application/vnd.github.raw` with `Accept: application/vnd.github+json`, causing GitHub Contents API to return JSON instead of raw file content
+- [x] Accept header regression test (TestGitHubSource_getFileContent_AcceptHeader)
+- [x] Debug logging (zerolog) for source creation, fetch flow, ref resolution, content parsing, and error diagnostics
 
 ### Stage 4.3: Config-Syncer Service
 **Goal**: Standalone service that coordinates config sources
@@ -250,6 +253,8 @@ This document outlines the phased implementation approach for building The Redir
 - [x] Retry logic with exponential backoff
 - [x] Refactored to use provider Registry (providerAdapter bridges Source -> ConfigSource)
 - [x] Removed duplicate inline source implementations (fileSource, httpSource, githubSource)
+- [x] Fixed `sourceConfigToMap` to map `ref` field to provider `environment` and default to `strategy: "branch"` when ref is set
+- [x] Debug logging with secret redaction in source creation (`redactSecrets()` helper)
 
 ### Stage 4.4: GitLab Integration
 **Goal**: GitLab repository support
@@ -638,7 +643,7 @@ All providers have comprehensive unit tests. Below is the test file mapping:
 |----------|------------|-----------|-------|
 | File | `file.go` | `file_test.go` | 12 tests (constructor, name, watch, registry, validate, fetch, close) |
 | HTTP | `http.go` | `http_test.go` | 11 tests (constructor, name, watch, registry, validate, fetch with auth variants) |
-| GitHub | `github.go` | `github_test.go` | 25+ tests (constructor, auth types, JWT, token caching, PEM parsing, tag patterns, strategies, webhooks) |
+| GitHub | `github.go` | `github_test.go` | 26+ tests (constructor, auth types, JWT, token caching, PEM parsing, tag patterns, strategies, webhooks, Accept header regression) |
 | GitLab | `gitlab.go` | `gitlab_test.go` | 20+ tests (constructor, auth types, OAuth refresh, tag patterns, strategies, webhooks) |
 | S3 | `s3.go` | `s3_test.go` | 8 tests (constructor, name, watch, registry, poll interval, close) |
 

@@ -727,6 +727,22 @@ targets:
 ./config-syncer --config syncer.yaml --dry-run
 ```
 
+### Debug Logging
+
+Enable debug output to diagnose integration issues:
+
+```yaml
+# syncer.yaml
+log_level: debug   # trace, debug, info (default), warn, error, fatal
+
+sources:
+  - name: "github-config"
+    type: github
+    # ...
+```
+
+Debug logging shows source creation details (with secrets redacted), fetch flow with resolved refs, API URLs, content sizes, and content previews on parse failures.
+
 ### Available Configuration Sources
 
 | Source | Type | Description |
