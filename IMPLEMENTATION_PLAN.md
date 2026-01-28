@@ -192,8 +192,8 @@ This document outlines the phased implementation approach for building The Redir
 
 ---
 
-## Phase 4: Config-Syncer Service
-**Goal**: Separate service for configuration management with pluggable sources
+## Phase 4: redirector-sync Service
+**Goal**: Separate service for configuration management with pluggable sources and integrated linting
 **Status**: Complete ✓
 
 ### Stage 4.1: Pluggable Source Interface
@@ -218,7 +218,7 @@ This document outlines the phased implementation approach for building The Redir
 - [x] Support release-based deployments (production)
 - [x] Support branch-based deployments (staging)
 - [x] Support tag-based deployments
-- [x] Webhook handler in config-syncer for real-time updates
+- [x] Webhook handler in redirector-sync for real-time updates
 - [x] GitHub App JWT generation and installation token exchange (golang-jwt/jwt/v5)
 - [x] PAT authentication support (GitHubPATAuth)
 - [x] Private key loading from file or inline PEM (PKCS1/PKCS8)
@@ -238,14 +238,14 @@ This document outlines the phased implementation approach for building The Redir
 - [x] Accept header regression test (TestGitHubSource_getFileContent_AcceptHeader)
 - [x] Debug logging (zerolog) for source creation, fetch flow, ref resolution, content parsing, and error diagnostics
 
-### Stage 4.3: Config-Syncer Service
-**Goal**: Standalone service that coordinates config sources
+### Stage 4.3: redirector-sync Service
+**Goal**: Standalone service that coordinates config sources with integrated linting
 **Status**: Complete ✓
 
-**Implementation**: `cmd/config-syncer/main.go`, `internal/syncer/syncer.go`
+**Implementation**: `cmd/redirector-sync/main.go`, `internal/syncer/syncer.go`
 
 **Tasks**:
-- [x] Create config-syncer binary
+- [x] Create redirector-sync binary (renamed from config-syncer, absorbed redirector-lint)
 - [x] Multi-source aggregation and merging
 - [x] Push config to multiple redirector targets
 - [x] Health checks for sources and targets
@@ -558,14 +558,14 @@ This document outlines the phased implementation approach for building The Redir
 ### Configuration Linter
 **Status**: Complete ✓
 
-**Implementation**: `cmd/redirector-lint/main.go`, `internal/lint/lint.go`
+**Implementation**: `cmd/redirector-sync/main.go` (lint mode), `internal/lint/lint.go`
 
 **Tasks**:
 - [x] Configuration validation
 - [x] Rule conflict detection
 - [x] JSON and colored output modes
 - [x] CI-friendly exit codes
-- [x] Multi-team conflict detection (`--multi-source` mode)
+- [x] Multi-team conflict detection (automatic with multi-source syncer config)
 - [x] Cross-source overlap detection
 - [x] Per-source issue reporting
 

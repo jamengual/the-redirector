@@ -33,13 +33,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /bin/redirector-lint \
-    ./cmd/redirector-lint
-
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /bin/config-syncer \
-    ./cmd/config-syncer
+    -o /bin/redirector-sync \
+    ./cmd/redirector-sync
 
 # Note: TUI is not included as it requires a terminal
 
@@ -63,8 +58,7 @@ RUN addgroup -g 1000 redirector && \
 
 # Copy binaries from builder
 COPY --from=builder /bin/redirector /usr/local/bin/
-COPY --from=builder /bin/redirector-lint /usr/local/bin/
-COPY --from=builder /bin/config-syncer /usr/local/bin/
+COPY --from=builder /bin/redirector-sync /usr/local/bin/
 
 # Create directories
 RUN mkdir -p /etc/redirector /var/log/redirector && \

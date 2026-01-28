@@ -20,16 +20,14 @@ all: lint test build
 build: ## Build the redirector binary
 	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/redirector
 
-build-all: ## Build all binaries (redirector, redirector-lint, redirector-tui, config-syncer)
+build-all: ## Build all binaries (redirector, redirector-sync, redirector-tui)
 	$(GOBUILD) $(LDFLAGS) -o bin/redirector ./cmd/redirector
-	$(GOBUILD) $(LDFLAGS) -o bin/redirector-lint ./cmd/redirector-lint
+	$(GOBUILD) $(LDFLAGS) -o bin/redirector-sync ./cmd/redirector-sync
 	$(GOBUILD) $(LDFLAGS) -o bin/redirector-tui ./cmd/redirector-tui
-	$(GOBUILD) $(LDFLAGS) -o bin/config-syncer ./cmd/config-syncer
 
 build-linux: ## Build all binaries for Linux
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/redirector-linux-amd64 ./cmd/redirector
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/redirector-lint-linux-amd64 ./cmd/redirector-lint
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/config-syncer-linux-amd64 ./cmd/config-syncer
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o bin/redirector-sync-linux-amd64 ./cmd/redirector-sync
 
 ## Testing
 

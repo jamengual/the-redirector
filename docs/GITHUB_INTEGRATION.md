@@ -34,7 +34,7 @@ The GitHub integration allows you to:
                               │ (release.published, push)
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Config-Syncer                                │
+│                       redirector-sync                                │
 │                                                                     │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐           │
 │   │   GitHub    │───▶│  Validate   │───▶│    Push     │           │
@@ -64,7 +64,7 @@ The GitHub integration allows you to:
 
 2. Configure the app:
    ```
-   App Name: redirector-config-syncer
+   App Name: redirector-sync
    Homepage URL: https://your-org.github.io/the-redirector
    Webhook URL: https://syncer.your-domain.com/webhook/github
    Webhook Secret: <generate-secure-secret>
@@ -136,10 +136,10 @@ The provider handles the full GitHub App auth flow:
 
 ## Configuration
 
-### Config-Syncer Configuration
+### redirector-sync Configuration
 
 ```yaml
-# config-syncer.yaml
+# syncer.yaml
 version: "1.0"
 
 sources:
@@ -331,7 +331,7 @@ jobs:
 
 ### Webhook Handler
 
-The Config-Syncer exposes a webhook endpoint:
+The redirector-sync exposes a webhook endpoint:
 
 ```
 POST /webhook/github
@@ -413,7 +413,7 @@ gh release delete v1.2.0  # Delete bad release
 # Previous release (v1.1.0) will be detected as latest
 ```
 
-### Using Config-Syncer API
+### Using redirector-sync API
 
 ```bash
 # List available versions
@@ -481,7 +481,7 @@ groups:
 
 ### Enable Debug Logging
 
-The config-syncer and GitHub provider support debug-level logging via zerolog. Add `log_level: debug` to your syncer config:
+The redirector-sync and GitHub provider support debug-level logging via zerolog. Add `log_level: debug` to your syncer config:
 
 ```yaml
 # syncer.yaml
@@ -509,9 +509,9 @@ Debug output includes:
 | `GitHub API returned 404` | Repository, path, or ref not found | Check owner/repo, file path, and branch/tag name |
 | `GitHub API returned 401` | Invalid or expired token | Regenerate PAT or check GitHub App private key |
 
-### Config-Syncer `ref` Field
+### redirector-sync `ref` Field
 
-When using the config-syncer YAML format, the `ref` field maps to the provider's `environment` parameter. If `ref` is set without an explicit `strategy`, the syncer defaults to `strategy: "branch"`:
+When using the redirector-sync YAML format, the `ref` field maps to the provider's `environment` parameter. If `ref` is set without an explicit `strategy`, the syncer defaults to `strategy: "branch"`:
 
 ```yaml
 sources:

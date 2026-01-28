@@ -18,7 +18,7 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 - **Multi-File Config**: Split rules across multiple YAML files for team organization
 - **Live Monitoring**: htop-style TUI for real-time request debugging
 - **Config Linting**: Detect duplicates, conflicts, and performance issues before deployment
-- **Decoupled Architecture**: Separate config-syncer service for complex config management
+- **Decoupled Architecture**: Separate redirector-sync service for complex config management
 - **Observable**: Stats endpoints, structured logging with rotation
 
 ## Components
@@ -26,9 +26,8 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 | Binary | Description |
 |--------|-------------|
 | `redirector` | Main redirect server |
-| `redirector-lint` | Config validator and analyzer |
+| `redirector-sync` | Config sync + lint (replaces both `config-syncer` and `redirector-lint`) |
 | `redirector-tui` | Live monitoring dashboard |
-| `config-syncer` | Multi-source config synchronization |
 
 ---
 
@@ -42,9 +41,8 @@ go build ./...
 
 # Or build individually
 go build -o bin/redirector ./cmd/redirector
-go build -o bin/redirector-lint ./cmd/redirector-lint
+go build -o bin/redirector-sync ./cmd/redirector-sync
 go build -o bin/redirector-tui ./cmd/redirector-tui
-go build -o bin/config-syncer ./cmd/config-syncer
 ```
 
 ### Run
@@ -422,19 +420,22 @@ rules_include:
 
 ## CLI Tools
 
-### redirector-lint
+### Config Linting (via redirector-sync)
 
-Validate configuration and detect issues before deployment.
+Validate configuration and detect issues before deployment. Lint is integrated into `redirector-sync` and also runs automatically during sync (errors block sync, warnings are logged).
 
 ```bash
-# Basic validation
-./redirector-lint config.yaml
+# Basic validation (replaces redirector-lint)
+./redirector-sync --lint --lint-config config.yaml
 
 # JSON output for CI/CD
-./redirector-lint --json config.yaml
+./redirector-sync --lint --lint-config config.yaml --lint-json
 
 # Quiet mode (errors only)
-./redirector-lint --quiet config.yaml
+./redirector-sync --lint --lint-config config.yaml --lint-quiet
+
+# Lint by fetching from syncer sources
+./redirector-sync --lint --config syncer.yaml
 ```
 
 **Checks performed:**
@@ -468,17 +469,14 @@ Found: 1 errors, 2 warnings, 0 suggestions
 
 #### Multi-Team Conflict Detection
 
-Detect conflicts between rules from different teams before they cause runtime issues:
+When your syncer config defines multiple sources, lint automatically detects conflicts between teams:
 
 ```bash
-# Check multiple team configs for conflicts
-./redirector-lint --multi-source \
-  "marketing:marketing:10:rules/marketing.yaml" \
-  "engineering:eng:20:rules/engineering.yaml" \
-  "platform:platform:100:rules/platform.yaml"
+# Fetches all sources from syncer.yaml, lints each, detects cross-source conflicts
+./redirector-sync --lint --config syncer.yaml
 ```
 
-Format: `name:prefix:priority:path`
+The syncer config already encodes source names, prefixes, and priorities — no extra arguments needed.
 
 Example output:
 ```
@@ -523,8 +521,8 @@ Live monitoring dashboard with htop-style interface.
 # Connect to remote server
 ./redirector-tui --url http://redirector.internal:8081
 
-# With config-syncer for multi-team conflict view
-./redirector-tui --url http://redirector:8081 --syncer-url http://config-syncer:8082
+# With redirector-sync for multi-team conflict view
+./redirector-tui --url http://redirector:8081 --syncer-url http://redirector-sync:8082
 ```
 
 **Features:**
@@ -621,9 +619,9 @@ curl -X POST http://localhost:8081/api/v1/reload
 
 ---
 
-## Config-Syncer
+## redirector-sync
 
-Separate service for pulling configuration from multiple sources with failover and multi-team support.
+Separate service for pulling configuration from multiple sources with failover, multi-team support, and integrated config linting.
 
 ### Multi-Team Configuration
 
@@ -718,13 +716,13 @@ targets:
 
 ```bash
 # Continuous sync
-./config-syncer --config syncer.yaml
+./redirector-sync --config syncer.yaml
 
 # One-shot (fetch once and exit)
-./config-syncer --config syncer.yaml --one-shot
+./redirector-sync --config syncer.yaml --one-shot
 
 # Dry run (fetch but don't write)
-./config-syncer --config syncer.yaml --dry-run
+./redirector-sync --config syncer.yaml --dry-run
 ```
 
 ### Debug Logging
@@ -1011,9 +1009,8 @@ spec:
 the-redirector/
 ├── cmd/
 │   ├── redirector/          # Main server
-│   ├── redirector-lint/     # Config linter
-│   ├── redirector-tui/      # Live monitoring TUI
-│   └── config-syncer/       # Config sync service
+│   ├── redirector-sync/     # Config sync + lint service
+│   └── redirector-tui/      # Live monitoring TUI
 ├── internal/
 │   ├── config/              # YAML parsing, validation
 │   ├── router/              # Radix tree + regex routing
@@ -1091,7 +1088,7 @@ See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed status.
 - HTTP/HTTPS endpoint provider (bearer/basic auth, ETag caching, custom headers)
 - OpenTelemetry tracing
 - Load testing infrastructure
-- Config-syncer refactored to use provider Registry (no duplicate source implementations)
+- redirector-sync (formerly config-syncer) refactored to use provider Registry (no duplicate source implementations)
 - Comprehensive test coverage across all providers (unit + integration)
 
 **Upcoming:**

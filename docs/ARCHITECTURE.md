@@ -16,7 +16,7 @@ The Redirector follows a **decoupled services architecture** that separates conc
                                           │
                                           ▼
                         ┌─────────────────────────────────────┐
-                        │       CONFIG-SYNCER SERVICE         │
+                        │      REDIRECTOR-SYNC SERVICE        │
                         │                                     │
                         │  • Pulls from multiple sources      │
                         │  • Validates configuration          │
@@ -78,7 +78,7 @@ GET  /api/v1/config       -> Return current config hash/version
 POST /api/v1/config/validate -> Validate config without applying
 ```
 
-### 2. Config-Syncer Service
+### 2. redirector-sync Service
 
 **Responsibility**: Fetch, validate, and push configuration from various sources.
 
@@ -162,7 +162,7 @@ Content-Type: application/json
 }
 ```
 
-## Config-Syncer Design
+## redirector-sync Design
 
 ### Core Components
 
@@ -249,7 +249,7 @@ func (s *S3Source) Watch(ctx context.Context) (<-chan *Config, error) {
 ### Configuration Example
 
 ```yaml
-# config-syncer.yaml
+# syncer.yaml
 version: "1.0"
 
 # Where to push config
@@ -311,14 +311,14 @@ rollback:
 
 ### Debug Logging
 
-Both the config-syncer and individual providers support structured debug logging via zerolog. Enable with `log_level: debug` in the syncer config.
+Both the redirector-sync and individual providers support structured debug logging via zerolog. Enable with `log_level: debug` in the syncer config.
 
 The GitHub provider logs at debug level:
 - Source configuration (owner, repo, path, strategy, environment, auth type)
 - Fetch lifecycle (strategy resolution, ref lookup, file content URL, bytes fetched)
 - Parse failures (content preview for diagnosis)
 
-The config-syncer logs at debug level:
+The redirector-sync logs at debug level:
 - Source creation (config map with secrets redacted via `redactSecrets()`)
 - Source registry lookups
 - Push retry attempts with backoff delays
@@ -346,7 +346,7 @@ spec:
             - containerPort: 8081
 
         # Config syncer sidecar
-        - name: config-syncer
+        - name: redirector-sync
           image: the-redirector-syncer:latest
           env:
             - name: TARGET_URL
@@ -361,17 +361,17 @@ spec:
 ### Pattern 2: Separate Service
 
 ```yaml
-# Dedicated config-syncer deployment
+# Dedicated redirector-sync deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: config-syncer
+  name: redirector-sync
 spec:
   replicas: 2  # HA for config management
   template:
     spec:
       containers:
-        - name: config-syncer
+        - name: redirector-sync
           image: the-redirector-syncer:latest
           env:
             - name: TARGETS
@@ -380,10 +380,10 @@ spec:
 
 ### Pattern 3: GitOps (ArgoCD/Flux)
 
-The config-syncer can integrate with GitOps workflows:
+The redirector-sync can integrate with GitOps workflows:
 
 1. Config changes pushed to Git
-2. GitHub webhook triggers config-syncer
+2. GitHub webhook triggers redirector-sync
 3. Config-syncer validates and pushes to all redirectors
 4. ArgoCD/Flux tracks syncer deployment
 
@@ -397,7 +397,7 @@ The config-syncer can integrate with GitOps workflows:
 4. **Easy Scaling**: Stateless, scale horizontally without coordination
 5. **Minimal Attack Surface**: No credentials for external services
 
-### For Config-Syncer Service
+### For redirector-sync Service
 
 1. **Single Responsibility**: Only handles config synchronization
 2. **Flexible Sources**: Easy to add new source types
@@ -415,7 +415,7 @@ The config-syncer can integrate with GitOps workflows:
 
 ## Failure Modes
 
-### Config-Syncer Failure
+### redirector-sync Failure
 
 - Redirectors continue serving with last known config
 - Alert on sync failures
