@@ -620,15 +620,15 @@ func TestGitHubSource_HandleWebhook(t *testing.T) {
 				fetchCalled = true
 				switch {
 				case contains(r.URL.Path, "releases"):
-					json.NewEncoder(w).Encode([]map[string]interface{}{
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 						{"tag_name": "v1.0.0", "prerelease": false, "draft": false},
 					})
 				case contains(r.URL.Path, "branches"):
-					json.NewEncoder(w).Encode(map[string]interface{}{
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"commit": map[string]interface{}{"sha": "abc123"},
 					})
 				case contains(r.URL.Path, "tags"):
-					json.NewEncoder(w).Encode([]map[string]interface{}{
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 						{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 					})
 				case contains(r.URL.Path, "contents"):
@@ -768,13 +768,13 @@ func TestGitHubSource_Fetch_TagStrategy(t *testing.T) {
 
 func TestGitHubSource_Fetch_TagStrategy_NoPattern(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/test/project/tags":
+		switch r.URL.Path {
+		case "/repos/test/project/tags":
 			json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"name": "v2.0.0", "commit": map[string]interface{}{"sha": "def456"}},
 				{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 			})
-		case r.URL.Path == "/repos/test/project/contents/config.yaml":
+		case "/repos/test/project/contents/config.yaml":
 			w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
