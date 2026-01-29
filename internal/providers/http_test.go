@@ -226,7 +226,7 @@ func TestHTTPSource_Fetch(t *testing.T) {
 			t.Errorf("expected GET request, got %s", r.Method)
 		}
 		w.Header().Set("ETag", `"abc123"`)
-		w.Write([]byte(validTestConfig))
+		_, _ = w.Write([]byte(validTestConfig))
 	}))
 	defer server.Close()
 
@@ -258,7 +258,7 @@ func TestHTTPSource_Fetch_WithBearerToken(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte(validTestConfig))
+		_, _ = w.Write([]byte(validTestConfig))
 	}))
 	defer server.Close()
 
@@ -285,7 +285,7 @@ func TestHTTPSource_Fetch_WithBasicAuth(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte(validTestConfig))
+		_, _ = w.Write([]byte(validTestConfig))
 	}))
 	defer server.Close()
 
@@ -313,7 +313,7 @@ func TestHTTPSource_Fetch_WithCustomHeaders(t *testing.T) {
 		if r.Header.Get("X-Custom") != "myvalue" {
 			t.Errorf("X-Custom = %q, want %q", r.Header.Get("X-Custom"), "myvalue")
 		}
-		w.Write([]byte(validTestConfig))
+		_, _ = w.Write([]byte(validTestConfig))
 	}))
 	defer server.Close()
 
@@ -336,7 +336,7 @@ func TestHTTPSource_Fetch_NotModified(t *testing.T) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		w.Write([]byte(validTestConfig))
+		_, _ = w.Write([]byte(validTestConfig))
 	}))
 	defer server.Close()
 

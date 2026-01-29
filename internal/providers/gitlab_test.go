@@ -382,7 +382,7 @@ func TestGitLabSource_HandleWebhook(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				fetchCalled = true
 				// Return minimal valid config
-				w.Write([]byte(`version: "1.0"`))
+				_, _ = w.Write([]byte(`version: "1.0"`))
 			}))
 			defer server.Close()
 
@@ -427,13 +427,13 @@ func TestGitLabSource_Fetch_TagStrategy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case contains(r.URL.Path, "/repository/tags"):
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"name": "config-2.0", "commit": map[string]interface{}{"id": "def456"}},
 				{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
 				{"name": "config-1.0", "commit": map[string]interface{}{"id": "aaa111"}},
 			})
 		case contains(r.URL.Path, "/repository/files"):
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -466,7 +466,7 @@ func TestGitLabSource_Fetch_TagStrategy(t *testing.T) {
 
 func TestGitLabSource_Fetch_TagStrategy_NoMatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 			{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
 		})
 	}))
@@ -532,11 +532,11 @@ func TestGitLabSource_HandleWebhook_TagPattern(t *testing.T) {
 				fetchCalled = true
 				switch {
 				case contains(r.URL.Path, "/repository/tags"):
-					json.NewEncoder(w).Encode([]map[string]interface{}{
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 						{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
 					})
 				case contains(r.URL.Path, "/repository/files"):
-					w.Write([]byte(validTestConfig))
+					_, _ = w.Write([]byte(validTestConfig))
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -593,7 +593,7 @@ func TestGitLabOAuthAuth_RefreshToken(t *testing.T) {
 			t.Errorf("client_secret = %q, want my-client-secret", r.Form.Get("client_secret"))
 		}
 
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token":  "new-access-token",
 			"refresh_token": "new-refresh-token",
 			"expires_in":    3600,
@@ -630,7 +630,7 @@ func TestGitLabOAuthAuth_RefreshToken(t *testing.T) {
 func TestGitLabOAuthAuth_RefreshToken_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error":"invalid_grant"}`))
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 	}))
 	defer server.Close()
 
@@ -652,7 +652,7 @@ func TestGitLabOAuthAuth_RefreshToken_ServerError(t *testing.T) {
 
 func TestGitLabOAuthAuth_AddAuth_TriggersRefresh(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token":  "refreshed-token",
 			"refresh_token": "new-refresh",
 			"expires_in":    7200,
@@ -688,7 +688,7 @@ func TestGitLabOAuthAuth_AddAuth_TriggersRefresh(t *testing.T) {
 
 func TestGitLabOAuthAuth_RefreshToken_KeepsOldRefreshIfNotReturned(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "new-access",
 			"expires_in":   3600,
 			"token_type":   "Bearer",
