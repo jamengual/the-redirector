@@ -13,6 +13,7 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 
 - **Blazing Fast**: Built on fasthttp with radix tree routing for < 1ms p99 latency
 - **Flexible Matching**: Exact paths, prefixes, regex with capture groups, and glob wildcards
+- **Host Allowlist**: O(1) early rejection of unknown hosts for DDoS mitigation
 - **Any HTTP Response**: Not just redirects - return 404, 403, 503, or any status with custom bodies
 - **Header Injection**: Add custom headers to any response
 - **Multi-File Config**: Split rules across multiple YAML files for team organization
@@ -275,6 +276,86 @@ Match requests by hostname for domain migrations.
   redirect:
     to: https://new.example.com/
     preserve_path: true
+```
+
+### Host Allowlist (DDoS Mitigation)
+
+When rules specify `match.host`, the redirector automatically builds an O(1) host allowlist at startup and on every config reload. Requests whose `Host` header doesn't match any configured host are rejected immediately with **421 Misdirected Request** — before any rule scanning takes place. This is a defensive measure that short-circuits the entire router for traffic aimed at unknown domains, which is common during volumetric DDoS attacks.
+
+The allowlist is derived from `match.host` fields across all rules. No manual configuration is needed.
+
+```
+Incoming request
+       │
+       ▼
+  ┌──────────────────┐
+  │  Host in          │──── No ──▶ 421 Misdirected Request
+  │  allowlist?       │           (zero rule scanning)
+  └────────┬─────────┘
+           │ Yes
+           ▼
+  ┌──────────────────┐
+  │  Match rules     │
+  │  (exact/prefix/  │
+  │   regex/glob)    │
+  └──────────────────┘
+```
+
+**Port stripping**: The `Host` header may include a port (e.g., `example.com:8080`). The allowlist strips the port before lookup, so a rule with `host: example.com` matches requests to `example.com`, `example.com:8080`, `example.com:443`, etc.
+
+**Prometheus metric**: Rejected requests increment the `redirector_host_rejected_total` counter, visible at the `/metrics` endpoint. Use this to monitor attack volume without flooding your application logs (rejections are logged at `debug` level only).
+
+#### Catch-All Rules Disable the Allowlist
+
+If **any** rule omits `match.host` (i.e., it matches requests regardless of domain), the host allowlist is automatically disabled. This is because a host-less rule is a catch-all that could legitimately match any domain — rejecting hosts would break that rule's intent.
+
+```yaml
+rules:
+  # This rule has a host — adds "api.example.com" to the allowlist
+  - id: api-redirect
+    match:
+      type: prefix
+      host: api.example.com
+      path: /v1/
+    redirect:
+      to: https://api.example.com/v2/
+      status: 301
+
+  # This rule has NO host — it matches any domain
+  # Its presence DISABLES the host allowlist entirely
+  - id: catch-all-404
+    match:
+      type: prefix
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+```
+
+In the example above, the `catch-all-404` rule has no `match.host`, so the allowlist is disabled and all hosts are accepted. If you want the allowlist active, every rule must specify a `match.host`.
+
+**Tip**: To keep the allowlist active while still having fallback rules, add `host` to every rule — including your catch-alls:
+
+```yaml
+rules:
+  # Allowlist stays active because every rule specifies a host
+  - id: api-redirect
+    match:
+      type: prefix
+      host: api.example.com
+      path: /v1/
+    redirect:
+      to: https://api.example.com/v2/
+      status: 301
+
+  - id: block-wp-admin
+    match:
+      type: prefix
+      host: api.example.com    # <-- explicit host keeps allowlist active
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
 ```
 
 ---

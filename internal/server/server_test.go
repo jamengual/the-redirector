@@ -325,6 +325,74 @@ func TestHandleCurrentVersion(t *testing.T) {
 	}
 }
 
+func TestHandleRedirect_HostRejected(t *testing.T) {
+	s := newTestServer(t, []config.Rule{
+		{
+			ID:       "host-rule",
+			Match:    config.Match{Type: config.MatchTypeExact, Host: "allowed.example.com", Path: "/foo"},
+			Redirect: config.Redirect{To: "https://example.com/foo", Status: 301},
+		},
+	})
+
+	// Request with unknown host should get 421
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/foo")
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.Header.SetHost("unknown.example.com")
+	s.handleRedirect(ctx)
+
+	if ctx.Response.StatusCode() != 421 {
+		t.Errorf("Expected 421, got %d", ctx.Response.StatusCode())
+	}
+	body := string(ctx.Response.Body())
+	if body != "Misdirected Request" {
+		t.Errorf("Expected body 'Misdirected Request', got %q", body)
+	}
+}
+
+func TestHandleRedirect_HostAllowed(t *testing.T) {
+	s := newTestServer(t, []config.Rule{
+		{
+			ID:       "host-rule",
+			Match:    config.Match{Type: config.MatchTypeExact, Host: "allowed.example.com", Path: "/foo"},
+			Redirect: config.Redirect{To: "https://example.com/foo", Status: 301},
+		},
+	})
+
+	// Request with known host should proceed normally
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/foo")
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.Header.SetHost("allowed.example.com")
+	s.handleRedirect(ctx)
+
+	if ctx.Response.StatusCode() != 301 {
+		t.Errorf("Expected 301, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestHandleRedirect_HostAllowedWildcard(t *testing.T) {
+	s := newTestServer(t, []config.Rule{
+		{
+			ID:       "wildcard-rule",
+			Match:    config.Match{Type: config.MatchTypeExact, Path: "/foo"},
+			Redirect: config.Redirect{To: "https://example.com/foo", Status: 301},
+		},
+	})
+
+	// A rule without host means any host is allowed
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/foo")
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.Header.SetHost("anything.example.com")
+	s.handleRedirect(ctx)
+
+	// Should match the rule (the wildcard rule matches any host + /foo path)
+	if ctx.Response.StatusCode() != 301 {
+		t.Errorf("Expected 301, got %d", ctx.Response.StatusCode())
+	}
+}
+
 func TestRequirePermission_AuthDisabled(t *testing.T) {
 	s := newTestServer(t, nil)
 	// authMiddleware is nil - all permissions should be granted

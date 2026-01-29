@@ -28,6 +28,9 @@ type Metrics struct {
 
 	// Rule metrics
 	RuleMatchesTotal *prometheus.CounterVec
+
+	// Host rejection metrics
+	HostRejectedTotal prometheus.Counter
 }
 
 // New creates and registers all metrics.
@@ -120,6 +123,15 @@ func New(registry prometheus.Registerer) *Metrics {
 			},
 			[]string{"rule_id", "match_type"},
 		),
+
+		// Host rejection metrics
+		HostRejectedTotal: promauto.With(registry).NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "redirector",
+				Name:      "host_rejected_total",
+				Help:      "Total requests rejected due to unknown Host header",
+			},
+		),
 	}
 
 	return m
@@ -169,6 +181,11 @@ func (m *Metrics) RecordRequest(method string, status int, ruleID string, durati
 	m.RequestsTotal.WithLabelValues(method, statusStr, ruleID).Inc()
 	m.RequestDuration.WithLabelValues(method, statusStr, ruleID).Observe(durationSeconds)
 	m.ResponseSize.WithLabelValues(statusStr).Observe(float64(responseBytes))
+}
+
+// RecordHostRejected increments the counter for rejected unknown hosts.
+func (m *Metrics) RecordHostRejected() {
+	m.HostRejectedTotal.Inc()
 }
 
 // RecordRuleMatch records a rule match.

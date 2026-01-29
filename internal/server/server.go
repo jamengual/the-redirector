@@ -326,6 +326,21 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 		defer s.metrics.DecrementInFlight()
 	}
 
+	// Early host rejection — avoid processing rules for unknown domains
+	s.mu.RLock()
+	allowed := s.router.IsAllowedHost(host)
+	s.mu.RUnlock()
+
+	if !allowed {
+		if s.metrics != nil {
+			s.metrics.RecordHostRejected()
+		}
+		log.Debug().Str("host", host).Msg("Rejected unknown host")
+		ctx.SetStatusCode(421) // Misdirected Request
+		ctx.SetBodyString("Misdirected Request")
+		return
+	}
+
 	s.mu.RLock()
 	rule, captures := s.router.Match(host, path)
 	s.mu.RUnlock()

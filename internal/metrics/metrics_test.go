@@ -82,6 +82,19 @@ func TestInFlightRequests(t *testing.T) {
 	m.DecrementInFlight()
 }
 
+func TestRecordHostRejected(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	m := New(registry)
+
+	if m.HostRejectedTotal == nil {
+		t.Fatal("HostRejectedTotal not initialized")
+	}
+
+	// Should not panic and should increment
+	m.RecordHostRejected()
+	m.RecordHostRejected()
+}
+
 func TestStatusToString(t *testing.T) {
 	tests := []struct {
 		status   int

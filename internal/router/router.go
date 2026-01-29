@@ -1,6 +1,7 @@
 package router
 
 import (
+	"net"
 	"sort"
 	"strings"
 
@@ -19,6 +20,10 @@ type Router struct {
 
 	// Regex/glob matches (evaluated in order)
 	regexMatches []*config.Rule
+
+	// Host allowlist for early rejection of unknown hosts
+	allowedHosts map[string]struct{}
+	allowAnyHost bool
 }
 
 // New creates a new router from the given rules.
@@ -27,6 +32,7 @@ func New(rules []config.Rule) (*Router, error) {
 		exactMatches:  make(map[string]*config.Rule),
 		prefixMatches: make([]*config.Rule, 0),
 		regexMatches:  make([]*config.Rule, 0),
+		allowedHosts:  make(map[string]struct{}),
 	}
 
 	// Sort rules by priority (higher first), then by specificity
@@ -63,7 +69,49 @@ func New(rules []config.Rule) (*Router, error) {
 		}
 	}
 
+	// Build host allowlist from rules
+	for i := range sortedRules {
+		if sortedRules[i].Match.Host == "" {
+			r.allowAnyHost = true
+		} else {
+			r.allowedHosts[sortedRules[i].Match.Host] = struct{}{}
+		}
+	}
+
 	return r, nil
+}
+
+// IsAllowedHost reports whether the given host is present in the allowlist.
+// Returns true if allowAnyHost is set (a rule with empty host exists) or if the
+// host (after stripping any port) appears in the allowedHosts map.
+func (r *Router) IsAllowedHost(host string) bool {
+	if r.allowAnyHost {
+		return true
+	}
+	host = stripPort(host)
+	_, ok := r.allowedHosts[host]
+	return ok
+}
+
+// AllowedHosts returns the list of explicitly allowed hostnames.
+func (r *Router) AllowedHosts() []string {
+	hosts := make([]string, 0, len(r.allowedHosts))
+	for h := range r.allowedHosts {
+		hosts = append(hosts, h)
+	}
+	return hosts
+}
+
+// stripPort removes the port suffix from a host string.
+// It handles both plain hosts ("example.com:8080") and IPv6 addresses ("[::1]:8080").
+func stripPort(host string) string {
+	// Use net.SplitHostPort which correctly handles IPv6.
+	// It returns an error for hosts without a port, in which case we return as-is.
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		return host
+	}
+	return h
 }
 
 // Match finds the best matching rule for the given host and path.
@@ -161,18 +209,22 @@ func buildMatchKey(host, path string) string {
 
 // Stats returns statistics about the router.
 type Stats struct {
-	ExactRules  int
-	PrefixRules int
-	RegexRules  int
-	TotalRules  int
+	ExactRules        int
+	PrefixRules       int
+	RegexRules        int
+	TotalRules        int
+	AllowedHostsCount int
+	AllowAnyHost      bool
 }
 
 // GetStats returns statistics about the router's rule distribution.
 func (r *Router) GetStats() Stats {
 	return Stats{
-		ExactRules:  len(r.exactMatches),
-		PrefixRules: len(r.prefixMatches),
-		RegexRules:  len(r.regexMatches),
-		TotalRules:  len(r.exactMatches) + len(r.prefixMatches) + len(r.regexMatches),
+		ExactRules:        len(r.exactMatches),
+		PrefixRules:       len(r.prefixMatches),
+		RegexRules:        len(r.regexMatches),
+		TotalRules:        len(r.exactMatches) + len(r.prefixMatches) + len(r.regexMatches),
+		AllowedHostsCount: len(r.allowedHosts),
+		AllowAnyHost:      r.allowAnyHost,
 	}
 }

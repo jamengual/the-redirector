@@ -14,6 +14,7 @@ This document details the feature requirements and design decisions for The Redi
 │                         CORE (Minimal)                              │
 │  • HTTP redirect handling (any status code)                         │
 │  • Radix tree + regex routing                                       │
+│  • Host allowlist (O(1) early rejection for DDoS mitigation)        │
 │  • Config loading (file-based)                                      │
 │  • Prometheus metrics endpoint                                      │
 │  • Health/ready endpoints                                           │
@@ -689,6 +690,7 @@ Core packages (well-maintained, widely used):
 │  │                        MINIMAL CORE                                  │   │
 │  │  • fasthttp server                                                   │   │
 │  │  • Radix tree + regex router                                        │   │
+│  │  • Host allowlist (O(1) early rejection for DDoS mitigation)        │   │
 │  │  • YAML config loading (single file or directory)                   │   │
 │  │  • Any HTTP status response                                          │   │
 │  │  • Header injection                                                  │   │
