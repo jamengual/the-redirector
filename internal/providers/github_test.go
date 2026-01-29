@@ -435,7 +435,7 @@ func TestGitHubSource_Fetch_ReleaseStrategy(t *testing.T) {
 		case "/repos/test/project/contents/config.yaml":
 			// Return raw config content
 			w.Header().Set("Content-Type", "application/vnd.github.raw")
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -474,7 +474,7 @@ func TestGitHubSource_Fetch_BranchStrategy(t *testing.T) {
 			})
 		case "/repos/test/project/contents/config.yaml":
 			w.Header().Set("Content-Type", "application/vnd.github.raw")
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -510,7 +510,7 @@ func TestGitHubSource_getFileContent_AcceptHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/test/project/contents/config.yaml" {
 			receivedAccept = r.Header.Get("Accept")
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -632,7 +632,7 @@ func TestGitHubSource_HandleWebhook(t *testing.T) {
 						{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 					})
 				case contains(r.URL.Path, "contents"):
-					w.Write([]byte(validTestConfig))
+					_, _ = w.Write([]byte(validTestConfig))
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -734,7 +734,7 @@ func TestGitHubSource_Fetch_TagStrategy(t *testing.T) {
 				{"name": "config-1.0", "commit": map[string]interface{}{"sha": "aaa111"}},
 			})
 		case "/repos/test/project/contents/config.yaml":
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -770,12 +770,12 @@ func TestGitHubSource_Fetch_TagStrategy_NoPattern(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/test/project/tags":
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"name": "v2.0.0", "commit": map[string]interface{}{"sha": "def456"}},
 				{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 			})
 		case "/repos/test/project/contents/config.yaml":
-			w.Write([]byte(validTestConfig))
+			_, _ = w.Write([]byte(validTestConfig))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -808,7 +808,7 @@ func TestGitHubSource_Fetch_TagStrategy_NoPattern(t *testing.T) {
 
 func TestGitHubSource_Fetch_TagStrategy_NoMatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 			{"name": "v1.0.0", "commit": map[string]interface{}{"sha": "abc123"}},
 		})
 	}))
@@ -881,11 +881,11 @@ func TestGitHubSource_HandleWebhook_TagPattern(t *testing.T) {
 				fetchCalled = true
 				switch {
 				case contains(r.URL.Path, "tags"):
-					json.NewEncoder(w).Encode([]map[string]interface{}{
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 						{"name": tt.tagRef, "commit": map[string]interface{}{"sha": "abc123"}},
 					})
 				case contains(r.URL.Path, "contents"):
-					w.Write([]byte(validTestConfig))
+					_, _ = w.Write([]byte(validTestConfig))
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
