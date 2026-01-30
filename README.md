@@ -142,7 +142,13 @@ For full details, examples, CSV format, and include files, see **[docs/RULE_TYPE
 
 When rules specify `match.host`, the redirector automatically builds an O(1) host allowlist. Requests for unknown hosts are rejected immediately with **421 Misdirected Request** — before any rule scanning.
 
-![Host Allowlist DDoS Mitigation](docs/ddos-diagram.gif)
+```mermaid
+flowchart TD
+    A[Incoming Request] --> B{Host in allowlist?}
+    B -- No --> C[421 Misdirected Request<br/>zero rule scanning]
+    B -- Yes --> D[Match rules<br/>exact / prefix / regex / glob]
+    D --> E[Response]
+```
 
 The allowlist is derived automatically from `match.host` fields across all rules. If any rule omits `match.host`, the allowlist is disabled (that rule is a catch-all).
 
