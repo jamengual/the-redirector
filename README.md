@@ -9,6 +9,8 @@ A high-performance, enterprise-grade URL redirect and response service built in 
 
 The Redirector handles URL redirects and custom responses at massive scale with sub-millisecond latency. Unlike general-purpose reverse proxies, it's purpose-built for redirect workloads with features designed for enterprise environments.
 
+Built by a DevOps/Platform Engineer with an emphasis on **decentralized configuration ownership**. Teams that own redirects can manage their own rules — via GitHub repos, S3 buckets, or any supported source — without depending on a DevOps or Platform Engineering team to make changes on their behalf. The syncer merges multiple team configs with conflict detection and priority-based resolution. For organizations that prefer centralized management, the same architecture works with a single config source.
+
 ### Key Features
 
 - **Blazing Fast**: Built on fasthttp with radix tree routing for < 1ms p99 latency
@@ -140,13 +142,7 @@ For full details, examples, CSV format, and include files, see **[docs/RULE_TYPE
 
 When rules specify `match.host`, the redirector automatically builds an O(1) host allowlist. Requests for unknown hosts are rejected immediately with **421 Misdirected Request** — before any rule scanning.
 
-```mermaid
-flowchart TD
-    A[Incoming Request] --> B{Host in allowlist?}
-    B -- No --> C[421 Misdirected Request<br/>zero rule scanning]
-    B -- Yes --> D[Match rules<br/>exact / prefix / regex / glob]
-    D --> E[Response]
-```
+![Host Allowlist DDoS Mitigation](docs/ddos-diagram.gif)
 
 The allowlist is derived automatically from `match.host` fields across all rules. If any rule omits `match.host`, the allowlist is disabled (that rule is a catch-all).
 
