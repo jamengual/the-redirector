@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   check-version:
@@ -54,7 +55,7 @@ jobs:
           echo "No version change detected"
           echo "should_release=false" >> $GITHUB_OUTPUT
 
-  create-release:
+  create-tag:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
@@ -76,3 +77,13 @@ jobs:
           else
             echo "Tag $VERSION already exists"
           fi
+
+  release:
+    needs: [check-version, create-tag]
+    if: needs.check-version.outputs.should_release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.check-version.outputs.version }}
+    permissions:
+      contents: write
+      packages: write
