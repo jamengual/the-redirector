@@ -166,7 +166,13 @@ When rules specify `match.host`, the redirector automatically builds an O(1) hos
 
 The allowlist is derived from `match.host` fields across all rules. No manual configuration is needed.
 
-![Host Allowlist DDoS Mitigation](ddos-diagram.gif)
+```mermaid
+flowchart TD
+    A[Incoming Request] --> B{Host in allowlist?}
+    B -- No --> C[421 Misdirected Request<br/>zero rule scanning]
+    B -- Yes --> D[Match rules<br/>exact / prefix / regex / glob]
+    D --> E[Response]
+```
 
 **Port stripping**: The `Host` header may include a port (e.g., `example.com:8080`). The allowlist strips the port before lookup, so a rule with `host: example.com` matches requests to `example.com`, `example.com:8080`, `example.com:443`, etc.
 
