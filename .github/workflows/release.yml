@@ -4,18 +4,53 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
 
 env:
   GO_VERSION: '1.25'
   REGISTRY: ghcr.io
 
 jobs:
+  # Normalize version from either trigger source
+  resolve-version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      docker_version: ${{ steps.resolve.outputs.docker_version }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "docker_version=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Resolved version: ${VERSION}"
+
   # Run tests before release
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: resolve-version
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.version }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -29,7 +64,7 @@ jobs:
   build:
     name: Build Binaries
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, resolve-version]
     strategy:
       matrix:
         include:
@@ -46,24 +81,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.version }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Get version from tag
-        id: version
-        run: |
-          # Extract version from GITHUB_REF (refs/tags/v1.2.3 -> v1.2.3)
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
       - name: Build binaries
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           mkdir -p dist
 
@@ -105,11 +135,14 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, resolve-version]
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.version }}
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -126,21 +159,81 @@ jobs:
           cd release-assets
           sha256sum * > checksums.txt
 
-      - name: Get version from tag
-        id: version
+      - name: Generate release notes
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          # Find the previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p' || echo "")
+
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${VERSION}"
+          else
+            RANGE="${VERSION}"
+          fi
+
+          echo "## What's Changed" > release_notes.md
+          echo "" >> release_notes.md
+
+          # Collect commits by category
+          FEATURES=""
+          FIXES=""
+          IMPROVEMENTS=""
+          REMOVALS=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in
+              Add*|Implement*)
+                FEATURES="${FEATURES}- ${line}"$'\n' ;;
+              Fix*)
+                FIXES="${FIXES}- ${line}"$'\n' ;;
+              Update*|Improve*|Rename*|Simplify*)
+                IMPROVEMENTS="${IMPROVEMENTS}- ${line}"$'\n' ;;
+              Remove*)
+                REMOVALS="${REMOVALS}- ${line}"$'\n' ;;
+              *)
+                OTHER="${OTHER}- ${line}"$'\n' ;;
+            esac
+          done < <(git log --pretty=format:"%s" "$RANGE" 2>/dev/null || echo "")
+
+          if [ -n "$FEATURES" ]; then
+            echo "### New Features" >> release_notes.md
+            echo "$FEATURES" >> release_notes.md
+          fi
+
+          if [ -n "$FIXES" ]; then
+            echo "### Bug Fixes" >> release_notes.md
+            echo "$FIXES" >> release_notes.md
+          fi
+
+          if [ -n "$IMPROVEMENTS" ]; then
+            echo "### Improvements" >> release_notes.md
+            echo "$IMPROVEMENTS" >> release_notes.md
+          fi
+
+          if [ -n "$REMOVALS" ]; then
+            echo "### Removals" >> release_notes.md
+            echo "$REMOVALS" >> release_notes.md
+          fi
+
+          if [ -n "$OTHER" ]; then
+            echo "### Other Changes" >> release_notes.md
+            echo "$OTHER" >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${VERSION}" >> release_notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         with:
-          name: Release ${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.resolve-version.outputs.version }}
+          name: Release ${{ needs.resolve-version.outputs.version }}
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          generate_release_notes: true
+          prerelease: ${{ contains(needs.resolve-version.outputs.version, '-') }}
+          body_path: release_notes.md
           files: |
             release-assets/*
 
@@ -148,20 +241,32 @@ jobs:
   docker:
     name: Docker
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, resolve-version]
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.version }}
 
-      - name: Get version from tag
-        id: version
+      - name: Compute Docker tags
+        id: tags
+        env:
+          DOCKER_VERSION: ${{ needs.resolve-version.outputs.docker_version }}
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          # Strip 'v' prefix for Docker tag
-          echo "docker_version=${VERSION#v}" >> $GITHUB_OUTPUT
+          # Parse semver components (e.g., 1.2.3 from v1.2.3)
+          MAJOR=$(echo "$DOCKER_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$DOCKER_VERSION" | cut -d. -f2)
+
+          TAGS="${IMAGE}:${DOCKER_VERSION}"
+          TAGS="${TAGS},${IMAGE}:${MAJOR}.${MINOR}"
+          TAGS="${TAGS},${IMAGE}:${MAJOR}"
+          TAGS="${TAGS},${IMAGE}:latest"
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Docker tags: ${TAGS}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -176,28 +281,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.resolve-version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
