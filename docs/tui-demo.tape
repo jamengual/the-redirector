@@ -19,7 +19,7 @@ Set Theme "Catppuccin Mocha"
 Set Padding 20
 
 # Start the TUI connected to local management API
-Type "redirector-tui --url http://localhost:8081"
+Type "bin/redirector-tui --url http://localhost:8081"
 Enter
 Sleep 2s
 
