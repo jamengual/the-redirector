@@ -2,8 +2,9 @@
 
 Live monitoring dashboard with an htop-style interface for real-time request debugging.
 
-<!-- To generate the demo GIF, run: vhs docs/tui-demo.tape (requires a running redirector) -->
-> **Demo:** To generate an animated GIF of the TUI, install [VHS](https://github.com/charmbracelet/vhs) and run `vhs docs/tui-demo.tape` with a running redirector instance.
+![TUI Demo](tui-demo.gif)
+
+*Generated with [VHS](https://github.com/charmbracelet/vhs). Regenerate: `vhs docs/tui-demo.tape`*
 
 ## Quick Start
 

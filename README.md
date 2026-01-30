@@ -190,7 +190,9 @@ For full setup, source types, conflict resolution, and linting details, see **[d
 
 Live monitoring dashboard with htop-style interface.
 
-<!-- To generate the demo GIF, run: vhs docs/tui-demo.tape (requires a running redirector) -->
+![TUI Demo](docs/tui-demo.gif)
+
+*Generated with [VHS](https://github.com/charmbracelet/vhs). Regenerate: `vhs docs/tui-demo.tape`*
 
 ```bash
 ./redirector-tui --url http://localhost:8081
