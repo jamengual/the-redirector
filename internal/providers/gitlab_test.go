@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jamengual/the-redirector/internal/config"
 )
@@ -381,7 +382,7 @@ func TestGitLabSource_HandleWebhook(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				fetchCalled = true
 				// Return minimal valid config
-				w.Write([]byte(`version: "1.0"`))
+				_, _ = w.Write([]byte(`version: "1.0"`))
 			}))
 			defer server.Close()
 
@@ -404,6 +405,313 @@ func TestGitLabSource_HandleWebhook(t *testing.T) {
 				t.Errorf("Fetch called = %v, want %v", fetchCalled, tt.wantFetch)
 			}
 		})
+	}
+}
+
+func TestNewGitLabSource_TagPattern(t *testing.T) {
+	source, err := NewGitLabSource(map[string]interface{}{
+		"project":     "mygroup/myproject",
+		"strategy":    "tag",
+		"tag_pattern": "v*",
+	})
+	if err != nil {
+		t.Fatalf("NewGitLabSource() error = %v", err)
+	}
+	gl, _ := source.(*GitLabSource)
+	if gl.tagPattern != "v*" {
+		t.Errorf("tagPattern = %q, want %q", gl.tagPattern, "v*")
+	}
+}
+
+func TestGitLabSource_Fetch_TagStrategy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case contains(r.URL.Path, "/repository/tags"):
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"name": "config-2.0", "commit": map[string]interface{}{"id": "def456"}},
+				{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
+				{"name": "config-1.0", "commit": map[string]interface{}{"id": "aaa111"}},
+			})
+		case contains(r.URL.Path, "/repository/files"):
+			_, _ = w.Write([]byte(validTestConfig))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	source := &GitLabSource{
+		projectPath: "test/project",
+		filePath:    "config.yaml",
+		strategy:    StrategyTag,
+		tagPattern:  "config-*",
+		baseURL:     server.URL,
+		client:      server.Client(),
+		webhookChan: make(chan *config.Config, 1),
+		stopCh:      make(chan struct{}),
+	}
+
+	cfg, err := source.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("Fetch() returned nil config")
+	}
+	// Should have matched "config-2.0", not "v1.0.0"
+	if source.currentRef != "config-2.0" {
+		t.Errorf("currentRef = %q, want %q", source.currentRef, "config-2.0")
+	}
+}
+
+func TestGitLabSource_Fetch_TagStrategy_NoMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
+		})
+	}))
+	defer server.Close()
+
+	source := &GitLabSource{
+		projectPath: "test/project",
+		filePath:    "config.yaml",
+		strategy:    StrategyTag,
+		tagPattern:  "release-*",
+		baseURL:     server.URL,
+		client:      server.Client(),
+		webhookChan: make(chan *config.Config, 1),
+		stopCh:      make(chan struct{}),
+	}
+
+	_, err := source.Fetch(context.Background())
+	if err == nil {
+		t.Error("expected error when no tags match pattern")
+	}
+	if !contains(err.Error(), "no tags matching pattern") {
+		t.Errorf("error %q should contain %q", err.Error(), "no tags matching pattern")
+	}
+}
+
+func TestGitLabSource_HandleWebhook_TagPattern(t *testing.T) {
+	tests := []struct {
+		name       string
+		tagPattern string
+		tagRef     string
+		wantFetch  bool
+	}{
+		{
+			name:       "matching pattern",
+			tagPattern: "v*",
+			tagRef:     "refs/tags/v1.0.0",
+			wantFetch:  true,
+		},
+		{
+			name:       "non-matching pattern",
+			tagPattern: "v*",
+			tagRef:     "refs/tags/release-1.0.0",
+			wantFetch:  false,
+		},
+		{
+			name:       "no pattern set (matches all)",
+			tagPattern: "",
+			tagRef:     "refs/tags/anything",
+			wantFetch:  true,
+		},
+		{
+			name:       "complex pattern",
+			tagPattern: "config-[0-9]*",
+			tagRef:     "refs/tags/config-2",
+			wantFetch:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetchCalled := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fetchCalled = true
+				switch {
+				case contains(r.URL.Path, "/repository/tags"):
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v1.0.0", "commit": map[string]interface{}{"id": "abc123"}},
+					})
+				case contains(r.URL.Path, "/repository/files"):
+					_, _ = w.Write([]byte(validTestConfig))
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			source := &GitLabSource{
+				projectPath: "test/project",
+				filePath:    "config.yaml",
+				strategy:    StrategyTag,
+				tagPattern:  tt.tagPattern,
+				environment: "production",
+				baseURL:     server.URL,
+				client:      server.Client(),
+				webhookChan: make(chan *config.Config, 1),
+				stopCh:      make(chan struct{}),
+			}
+
+			payload, _ := json.Marshal(map[string]interface{}{
+				"ref": tt.tagRef,
+			})
+			_ = source.HandleWebhook(context.Background(), "Tag Push Hook", payload)
+
+			if fetchCalled != tt.wantFetch {
+				t.Errorf("Fetch called = %v, want %v", fetchCalled, tt.wantFetch)
+			}
+		})
+	}
+}
+
+func TestGitLabOAuthAuth_RefreshToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+			t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", ct)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parsing form: %v", err)
+		}
+		if r.Form.Get("grant_type") != "refresh_token" {
+			t.Errorf("grant_type = %q, want refresh_token", r.Form.Get("grant_type"))
+		}
+		if r.Form.Get("refresh_token") != "old-refresh-token" {
+			t.Errorf("refresh_token = %q, want old-refresh-token", r.Form.Get("refresh_token"))
+		}
+		if r.Form.Get("client_id") != "my-client-id" {
+			t.Errorf("client_id = %q, want my-client-id", r.Form.Get("client_id"))
+		}
+		if r.Form.Get("client_secret") != "my-client-secret" {
+			t.Errorf("client_secret = %q, want my-client-secret", r.Form.Get("client_secret"))
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "new-access-token",
+			"refresh_token": "new-refresh-token",
+			"expires_in":    3600,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer server.Close()
+
+	auth := &GitLabOAuthAuth{
+		AccessToken:  "old-access-token",
+		RefreshToken: "old-refresh-token",
+		ClientID:     "my-client-id",
+		ClientSecret: "my-client-secret",
+		TokenURL:     server.URL,
+		expiresAt:    time.Now().Add(-1 * time.Hour), // expired
+	}
+
+	err := auth.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("refreshToken() error = %v", err)
+	}
+
+	if auth.AccessToken != "new-access-token" {
+		t.Errorf("AccessToken = %q, want %q", auth.AccessToken, "new-access-token")
+	}
+	if auth.RefreshToken != "new-refresh-token" {
+		t.Errorf("RefreshToken = %q, want %q", auth.RefreshToken, "new-refresh-token")
+	}
+	if auth.expiresAt.Before(time.Now().Add(50 * time.Minute)) {
+		t.Errorf("expiresAt should be ~1 hour from now, got %v", auth.expiresAt)
+	}
+}
+
+func TestGitLabOAuthAuth_RefreshToken_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer server.Close()
+
+	auth := &GitLabOAuthAuth{
+		RefreshToken: "bad-token",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		TokenURL:     server.URL,
+	}
+
+	err := auth.refreshToken(context.Background())
+	if err == nil {
+		t.Error("expected error for server error response")
+	}
+	if !contains(err.Error(), "400") {
+		t.Errorf("error %q should contain status code 400", err.Error())
+	}
+}
+
+func TestGitLabOAuthAuth_AddAuth_TriggersRefresh(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "refreshed-token",
+			"refresh_token": "new-refresh",
+			"expires_in":    7200,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer server.Close()
+
+	auth := &GitLabOAuthAuth{
+		AccessToken:  "expired-token",
+		RefreshToken: "my-refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		TokenURL:     server.URL,
+		expiresAt:    time.Now().Add(-1 * time.Minute), // expired
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com", nil)
+	err := auth.AddAuth(req)
+	if err != nil {
+		t.Fatalf("AddAuth() error = %v", err)
+	}
+
+	// Should have refreshed and set new token
+	if auth.AccessToken != "refreshed-token" {
+		t.Errorf("AccessToken = %q, want %q", auth.AccessToken, "refreshed-token")
+	}
+	// Authorization header should use the refreshed token
+	if got := req.Header.Get("Authorization"); got != "Bearer refreshed-token" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer refreshed-token")
+	}
+}
+
+func TestGitLabOAuthAuth_RefreshToken_KeepsOldRefreshIfNotReturned(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "new-access",
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+			// No refresh_token in response
+		})
+	}))
+	defer server.Close()
+
+	auth := &GitLabOAuthAuth{
+		AccessToken:  "old-access",
+		RefreshToken: "keep-this-refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		TokenURL:     server.URL,
+	}
+
+	err := auth.refreshToken(context.Background())
+	if err != nil {
+		t.Fatalf("refreshToken() error = %v", err)
+	}
+
+	if auth.RefreshToken != "keep-this-refresh" {
+		t.Errorf("RefreshToken = %q, want %q (should keep old refresh token)", auth.RefreshToken, "keep-this-refresh")
 	}
 }
 

@@ -5,12 +5,20 @@ package providers
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog/log"
 
 	"github.com/jamengual/the-redirector/internal/config"
 )
@@ -35,9 +43,13 @@ type GitHubSource struct {
 	// Deployment settings
 	strategy    DeploymentStrategy
 	environment string // maps to branch or release channel
+	tagPattern  string // glob pattern for tag matching (e.g., "v*", "config-*")
 
 	// Auth
 	auth GitHubAuth
+
+	// API base URL (defaults to https://api.github.com)
+	baseURL string
 
 	// State
 	currentRef  string // Current commit SHA or tag
@@ -85,6 +97,19 @@ type GitHubAuth interface {
 	GetToken(ctx context.Context) (string, error)
 }
 
+// GitHubPATAuth authenticates using a Personal Access Token.
+type GitHubPATAuth struct {
+	Token string
+}
+
+// GetToken returns the PAT token.
+func (a *GitHubPATAuth) GetToken(ctx context.Context) (string, error) {
+	if a.Token == "" {
+		return "", fmt.Errorf("PAT token is empty")
+	}
+	return a.Token, nil
+}
+
 // GitHubAppAuth authenticates using a GitHub App.
 // This is the recommended authentication method for production.
 //
@@ -121,18 +146,77 @@ func (a *GitHubAppAuth) GetToken(ctx context.Context) (string, error) {
 		return a.token, nil
 	}
 
-	// Generate new installation token
-	// 1. Create JWT signed with App private key
-	// 2. Exchange JWT for installation access token
-	// Implementation would use github.com/golang-jwt/jwt/v5
+	if a.PrivateKey == nil {
+		return "", fmt.Errorf("GitHub App private key is not configured")
+	}
 
-	// Placeholder - actual implementation would:
-	// jwt := createJWT(a.AppID, a.PrivateKey)
-	// token, expiresAt := exchangeForInstallationToken(jwt, a.InstallationID)
-	// a.token = token
-	// a.tokenExpiresAt = expiresAt
+	// 1. Create JWT signed with App private key
+	now := time.Now()
+	claims := jwt.RegisteredClaims{
+		Issuer:    fmt.Sprintf("%d", a.AppID),
+		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
+		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+	}
+
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signedJWT, err := jwtToken.SignedString(a.PrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("signing JWT: %w", err)
+	}
+
+	// 2. Exchange JWT for installation access token
+	token, expiresAt, err := a.exchangeForInstallationToken(ctx, signedJWT)
+	if err != nil {
+		return "", err
+	}
+
+	a.token = token
+	a.tokenExpiresAt = expiresAt
 
 	return a.token, nil
+}
+
+// apiBaseURL is the GitHub API base URL. Overridable for testing.
+var githubAPIBaseURL = "https://api.github.com"
+
+// exchangeForInstallationToken exchanges a JWT for an installation access token.
+func (a *GitHubAppAuth) exchangeForInstallationToken(ctx context.Context, signedJWT string) (string, time.Time, error) {
+	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubAPIBaseURL, a.InstallationID)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("creating token request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+signedJWT)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("exchanging JWT for token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			log.Debug().Err(readErr).Msg("GitHub: failed to read error response body")
+		}
+		return "", time.Time{}, fmt.Errorf("GitHub token exchange returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", time.Time{}, fmt.Errorf("decoding token response: %w", err)
+	}
+
+	return tokenResp.Token, tokenResp.ExpiresAt, nil
 }
 
 // GitHubSourceConfig configures the GitHub source.
@@ -205,26 +289,53 @@ func NewGitHubSource(cfg map[string]interface{}) (Source, error) {
 		environment = e
 	}
 
+	baseURL := "https://api.github.com"
+	if u, ok := cfg["base_url"].(string); ok && u != "" {
+		baseURL = u
+	}
+
+	tagPattern := ""
+	if tp, ok := cfg["tag_pattern"].(string); ok {
+		tagPattern = tp
+	}
+
 	source := &GitHubSource{
 		owner:       parts[0],
 		repo:        parts[1],
 		path:        path,
 		strategy:    strategy,
 		environment: environment,
+		tagPattern:  tagPattern,
+		baseURL:     baseURL,
 		options:     DefaultSourceOptions(),
 		client:      &http.Client{Timeout: 30 * time.Second},
 		webhookChan: make(chan *config.Config, 1),
 		stopCh:      make(chan struct{}),
 	}
 
-	// Configure GitHub App auth if provided
+	// Configure authentication
+	authType := "none"
 	if appCfg, ok := cfg["app"].(map[string]interface{}); ok {
 		auth, err := configureGitHubAppAuth(appCfg)
 		if err != nil {
 			return nil, fmt.Errorf("configuring GitHub App auth: %w", err)
 		}
 		source.auth = auth
+		authType = "github-app"
+	} else if token, ok := cfg["token"].(string); ok && token != "" {
+		source.auth = &GitHubPATAuth{Token: token}
+		authType = "pat"
 	}
+
+	log.Debug().
+		Str("owner", source.owner).
+		Str("repo", source.repo).
+		Str("path", source.path).
+		Str("strategy", string(source.strategy)).
+		Str("environment", source.environment).
+		Str("auth", authType).
+		Str("base_url", source.baseURL).
+		Msg("GitHub: source configured")
 
 	return source, nil
 }
@@ -250,13 +361,59 @@ func configureGitHubAppAuth(cfg map[string]interface{}) (*GitHubAppAuth, error) 
 		return nil, fmt.Errorf("installation_id is required")
 	}
 
-	// Load private key from file or string
-	// Implementation would parse PEM and create rsa.PrivateKey
+	// Load private key from file path or inline PEM string
+	var pemData []byte
+	if keyPath, ok := cfg["private_key_path"].(string); ok && keyPath != "" {
+		data, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading private key file: %w", err)
+		}
+		pemData = data
+	} else if keyStr, ok := cfg["private_key"].(string); ok && keyStr != "" {
+		pemData = []byte(keyStr)
+	}
+
+	var privateKey *rsa.PrivateKey
+	if len(pemData) > 0 {
+		key, err := parseRSAPrivateKey(pemData)
+		if err != nil {
+			return nil, fmt.Errorf("parsing private key: %w", err)
+		}
+		privateKey = key
+	}
 
 	return &GitHubAppAuth{
 		AppID:          appID,
 		InstallationID: installationID,
+		PrivateKey:     privateKey,
 	}, nil
+}
+
+// parseRSAPrivateKey parses a PEM-encoded RSA private key.
+// Supports both PKCS1 and PKCS8 formats.
+func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in private key data")
+	}
+
+	// Try PKCS1 first (RSA PRIVATE KEY)
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+
+	// Try PKCS8 (PRIVATE KEY)
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key (tried PKCS1 and PKCS8): %w", err)
+	}
+
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not RSA")
+	}
+
+	return rsaKey, nil
 }
 
 // Name returns the source type identifier.
@@ -268,6 +425,14 @@ func (g *GitHubSource) Name() string {
 func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 	var ref string
 	var err error
+
+	log.Debug().
+		Str("owner", g.owner).
+		Str("repo", g.repo).
+		Str("path", g.path).
+		Str("strategy", string(g.strategy)).
+		Str("environment", g.environment).
+		Msg("GitHub: starting fetch")
 
 	switch g.strategy {
 	case StrategyRelease:
@@ -286,15 +451,20 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 		return nil, fmt.Errorf("getting ref: %w", err)
 	}
 
+	log.Debug().Str("ref", ref).Msg("GitHub: resolved ref")
+
 	// Fetch config file content
 	content, err := g.getFileContent(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("fetching config: %w", err)
 	}
 
+	log.Debug().Int("bytes", len(content)).Msg("GitHub: fetched file content")
+
 	// Parse configuration
 	cfg, err := config.ParseBytes(content)
 	if err != nil {
+		log.Debug().Str("content_preview", string(content[:min(len(content), 200)])).Msg("GitHub: content that failed to parse")
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
@@ -302,6 +472,8 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*config.Config, error) {
 	g.mu.Lock()
 	g.currentRef = ref
 	g.mu.Unlock()
+
+	log.Debug().Str("ref", ref).Int("rules", len(cfg.Rules)).Msg("GitHub: fetch complete")
 
 	return cfg, nil
 }
@@ -314,7 +486,7 @@ func (g *GitHubSource) getLatestRelease(ctx context.Context) (string, error) {
 	//   - staging: latest prerelease OR latest overall
 	//   - specific: match release name pattern
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", g.owner, g.repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/releases", g.baseURL, g.owner, g.repo)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -371,7 +543,7 @@ func (g *GitHubSource) getLatestTag(ctx context.Context) (string, error) {
 	// GET /repos/{owner}/{repo}/tags
 	// Filter by tag pattern
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/tags", g.owner, g.repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/tags", g.baseURL, g.owner, g.repo)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -403,6 +575,16 @@ func (g *GitHubSource) getLatestTag(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no tags found")
 	}
 
+	// Filter by tag pattern if configured
+	if g.tagPattern != "" {
+		for _, tag := range tags {
+			if matched, _ := path.Match(g.tagPattern, tag.Name); matched {
+				return tag.Name, nil
+			}
+		}
+		return "", fmt.Errorf("no tags matching pattern %q found", g.tagPattern)
+	}
+
 	// Return the latest tag (GitHub returns sorted by date)
 	return tags[0].Name, nil
 }
@@ -411,8 +593,8 @@ func (g *GitHubSource) getLatestTag(ctx context.Context) (string, error) {
 func (g *GitHubSource) getBranchRef(ctx context.Context) (string, error) {
 	branch := g.environmentToBranch()
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches/%s",
-		g.owner, g.repo, branch)
+	url := fmt.Sprintf("%s/repos/%s/%s/branches/%s",
+		g.baseURL, g.owner, g.repo, branch)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -458,8 +640,10 @@ func (g *GitHubSource) environmentToBranch() string {
 
 // getFileContent fetches the config file at a specific ref.
 func (g *GitHubSource) getFileContent(ctx context.Context, ref string) ([]byte, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
-		g.owner, g.repo, g.path, ref)
+	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
+		g.baseURL, g.owner, g.repo, g.path, ref)
+
+	log.Debug().Str("url", url).Str("ref", ref).Msg("GitHub: fetching file content")
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -503,15 +687,21 @@ func (g *GitHubSource) getFileContent(ctx context.Context, ref string) ([]byte, 
 	}
 
 	// Read content
-	content := make([]byte, resp.ContentLength)
-	_, err = resp.Body.Read(content)
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
 
-	return content, err
+	return content, nil
 }
 
 // addAuthHeader adds authentication to the request.
 func (g *GitHubSource) addAuthHeader(ctx context.Context, req *http.Request) error {
-	req.Header.Set("Accept", "application/vnd.github+json")
+	// Only set Accept if the caller hasn't already set it (e.g., getFileContent
+	// sets application/vnd.github.raw to get raw file content).
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/vnd.github+json")
+	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	if g.auth != nil {
@@ -667,7 +857,12 @@ func (g *GitHubSource) handleTagEvent(ctx context.Context, payload []byte) error
 		return nil
 	}
 
-	// TODO: Match against tag pattern
+	// Skip tags that don't match the configured pattern
+	if g.tagPattern != "" {
+		if matched, _ := path.Match(g.tagPattern, event.Ref); !matched {
+			return nil
+		}
+	}
 
 	cfg, err := g.Fetch(ctx)
 	if err != nil {
@@ -690,7 +885,7 @@ func (g *GitHubSource) SupportsWatch() bool {
 // Validate checks GitHub API access.
 func (g *GitHubSource) Validate(ctx context.Context) error {
 	// Try to access the repository
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", g.owner, g.repo)
+	url := fmt.Sprintf("%s/repos/%s/%s", g.baseURL, g.owner, g.repo)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

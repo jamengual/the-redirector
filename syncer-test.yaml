@@ -1,0 +1,29 @@
+# Test syncer config - pulls from private GitHub repo
+# Usage: ./bin/redirector-sync -config syncer-test.yaml -one-shot -dry-run
+
+sync_interval: 30s
+log_level: debug
+log_format: console
+
+sources:
+  - name: "github-test"
+    type: github
+    priority: 100
+    enabled: true
+    github:
+      owner: "jamengual"
+      repo: "the-redirector-test-config"
+      path: "config.yaml"
+      ref: "test-config"
+      token: "${GITHUB_TOKEN}"
+
+webhook:
+  enabled: true
+  port: 8082
+
+output:
+  type: file
+  file:
+    path: "/tmp/redirector-synced-config.yaml"
+    mode: 0644
+    atomic: true

@@ -2,7 +2,7 @@
 
 A high-performance, enterprise-grade URL redirect and response service built in Go.
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Overview
@@ -13,12 +13,13 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 
 - **Blazing Fast**: Built on fasthttp with radix tree routing for < 1ms p99 latency
 - **Flexible Matching**: Exact paths, prefixes, regex with capture groups, and glob wildcards
+- **Host Allowlist**: O(1) early rejection of unknown hosts for DDoS mitigation
 - **Any HTTP Response**: Not just redirects - return 404, 403, 503, or any status with custom bodies
 - **Header Injection**: Add custom headers to any response
 - **Multi-File Config**: Split rules across multiple YAML files for team organization
 - **Live Monitoring**: htop-style TUI for real-time request debugging
 - **Config Linting**: Detect duplicates, conflicts, and performance issues before deployment
-- **Decoupled Architecture**: Separate config-syncer service for complex config management
+- **Decoupled Architecture**: Separate redirector-sync service for complex config management
 - **Observable**: Stats endpoints, structured logging with rotation
 
 ## Components
@@ -26,9 +27,8 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 | Binary | Description |
 |--------|-------------|
 | `redirector` | Main redirect server |
-| `redirector-lint` | Config validator and analyzer |
+| `redirector-sync` | Config sync + lint (replaces both `config-syncer` and `redirector-lint`) |
 | `redirector-tui` | Live monitoring dashboard |
-| `config-syncer` | Multi-source config synchronization |
 
 ---
 
@@ -42,9 +42,8 @@ go build ./...
 
 # Or build individually
 go build -o bin/redirector ./cmd/redirector
-go build -o bin/redirector-lint ./cmd/redirector-lint
+go build -o bin/redirector-sync ./cmd/redirector-sync
 go build -o bin/redirector-tui ./cmd/redirector-tui
-go build -o bin/config-syncer ./cmd/config-syncer
 ```
 
 ### Run
@@ -279,6 +278,86 @@ Match requests by hostname for domain migrations.
     preserve_path: true
 ```
 
+### Host Allowlist (DDoS Mitigation)
+
+When rules specify `match.host`, the redirector automatically builds an O(1) host allowlist at startup and on every config reload. Requests whose `Host` header doesn't match any configured host are rejected immediately with **421 Misdirected Request** — before any rule scanning takes place. This is a defensive measure that short-circuits the entire router for traffic aimed at unknown domains, which is common during volumetric DDoS attacks.
+
+The allowlist is derived from `match.host` fields across all rules. No manual configuration is needed.
+
+```
+Incoming request
+       │
+       ▼
+  ┌──────────────────┐
+  │  Host in          │──── No ──▶ 421 Misdirected Request
+  │  allowlist?       │           (zero rule scanning)
+  └────────┬─────────┘
+           │ Yes
+           ▼
+  ┌──────────────────┐
+  │  Match rules     │
+  │  (exact/prefix/  │
+  │   regex/glob)    │
+  └──────────────────┘
+```
+
+**Port stripping**: The `Host` header may include a port (e.g., `example.com:8080`). The allowlist strips the port before lookup, so a rule with `host: example.com` matches requests to `example.com`, `example.com:8080`, `example.com:443`, etc.
+
+**Prometheus metric**: Rejected requests increment the `redirector_host_rejected_total` counter, visible at the `/metrics` endpoint. Use this to monitor attack volume without flooding your application logs (rejections are logged at `debug` level only).
+
+#### Catch-All Rules Disable the Allowlist
+
+If **any** rule omits `match.host` (i.e., it matches requests regardless of domain), the host allowlist is automatically disabled. This is because a host-less rule is a catch-all that could legitimately match any domain — rejecting hosts would break that rule's intent.
+
+```yaml
+rules:
+  # This rule has a host — adds "api.example.com" to the allowlist
+  - id: api-redirect
+    match:
+      type: prefix
+      host: api.example.com
+      path: /v1/
+    redirect:
+      to: https://api.example.com/v2/
+      status: 301
+
+  # This rule has NO host — it matches any domain
+  # Its presence DISABLES the host allowlist entirely
+  - id: catch-all-404
+    match:
+      type: prefix
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+```
+
+In the example above, the `catch-all-404` rule has no `match.host`, so the allowlist is disabled and all hosts are accepted. If you want the allowlist active, every rule must specify a `match.host`.
+
+**Tip**: To keep the allowlist active while still having fallback rules, add `host` to every rule — including your catch-alls:
+
+```yaml
+rules:
+  # Allowlist stays active because every rule specifies a host
+  - id: api-redirect
+    match:
+      type: prefix
+      host: api.example.com
+      path: /v1/
+    redirect:
+      to: https://api.example.com/v2/
+      status: 301
+
+  - id: block-wp-admin
+    match:
+      type: prefix
+      host: api.example.com    # <-- explicit host keeps allowlist active
+      path: /wp-admin
+    redirect:
+      status: 404
+      body: "Not Found"
+```
+
 ---
 
 ## Environment Variables
@@ -422,19 +501,22 @@ rules_include:
 
 ## CLI Tools
 
-### redirector-lint
+### Config Linting (via redirector-sync)
 
-Validate configuration and detect issues before deployment.
+Validate configuration and detect issues before deployment. Lint is integrated into `redirector-sync` and also runs automatically during sync (errors block sync, warnings are logged).
 
 ```bash
-# Basic validation
-./redirector-lint config.yaml
+# Basic validation (replaces redirector-lint)
+./redirector-sync --lint --lint-config config.yaml
 
 # JSON output for CI/CD
-./redirector-lint --json config.yaml
+./redirector-sync --lint --lint-config config.yaml --lint-json
 
 # Quiet mode (errors only)
-./redirector-lint --quiet config.yaml
+./redirector-sync --lint --lint-config config.yaml --lint-quiet
+
+# Lint by fetching from syncer sources
+./redirector-sync --lint --config syncer.yaml
 ```
 
 **Checks performed:**
@@ -468,17 +550,14 @@ Found: 1 errors, 2 warnings, 0 suggestions
 
 #### Multi-Team Conflict Detection
 
-Detect conflicts between rules from different teams before they cause runtime issues:
+When your syncer config defines multiple sources, lint automatically detects conflicts between teams:
 
 ```bash
-# Check multiple team configs for conflicts
-./redirector-lint --multi-source \
-  "marketing:marketing:10:rules/marketing.yaml" \
-  "engineering:eng:20:rules/engineering.yaml" \
-  "platform:platform:100:rules/platform.yaml"
+# Fetches all sources from syncer.yaml, lints each, detects cross-source conflicts
+./redirector-sync --lint --config syncer.yaml
 ```
 
-Format: `name:prefix:priority:path`
+The syncer config already encodes source names, prefixes, and priorities — no extra arguments needed.
 
 Example output:
 ```
@@ -523,8 +602,8 @@ Live monitoring dashboard with htop-style interface.
 # Connect to remote server
 ./redirector-tui --url http://redirector.internal:8081
 
-# With config-syncer for multi-team conflict view
-./redirector-tui --url http://redirector:8081 --syncer-url http://config-syncer:8082
+# With redirector-sync for multi-team conflict view
+./redirector-tui --url http://redirector:8081 --syncer-url http://redirector-sync:8082
 ```
 
 **Features:**
@@ -621,9 +700,9 @@ curl -X POST http://localhost:8081/api/v1/reload
 
 ---
 
-## Config-Syncer
+## redirector-sync
 
-Separate service for pulling configuration from multiple sources with failover and multi-team support.
+Separate service for pulling configuration from multiple sources with failover, multi-team support, and integrated config linting.
 
 ### Multi-Team Configuration
 
@@ -718,27 +797,44 @@ targets:
 
 ```bash
 # Continuous sync
-./config-syncer --config syncer.yaml
+./redirector-sync --config syncer.yaml
 
 # One-shot (fetch once and exit)
-./config-syncer --config syncer.yaml --one-shot
+./redirector-sync --config syncer.yaml --one-shot
 
 # Dry run (fetch but don't write)
-./config-syncer --config syncer.yaml --dry-run
+./redirector-sync --config syncer.yaml --dry-run
 ```
+
+### Debug Logging
+
+Enable debug output to diagnose integration issues:
+
+```yaml
+# syncer.yaml
+log_level: debug   # trace, debug, info (default), warn, error, fatal
+
+sources:
+  - name: "github-config"
+    type: github
+    # ...
+```
+
+Debug logging shows source creation details (with secrets redacted), fetch flow with resolved refs, API URLs, content sizes, and content previews on parse failures.
 
 ### Available Configuration Sources
 
 | Source | Type | Description |
 |--------|------|-------------|
 | File | `file` | Local filesystem (YAML, JSON) |
+| HTTP/HTTPS | `http` | HTTP endpoint with bearer/basic auth, ETag caching |
 | AWS S3 | `s3` | S3 bucket with IAM/cross-account support |
 | AWS Parameter Store | `parameterstore` | SSM parameters (single or hierarchy) |
 | AWS Secrets Manager | `secretsmanager` | Secrets with rotation support |
 | Azure Blob Storage | `azureblob` | Azure Storage with SAS/DefaultCredential |
 | GCP Cloud Storage | `gcs` | GCS with Application Default Credentials |
-| GitHub | `github` | GitHub repos (releases, branches, tags) |
-| GitLab | `gitlab` | GitLab repos with webhook support |
+| GitHub | `github` | GitHub repos (PAT or GitHub App auth, release/branch/tag strategies, tag pattern glob matching) |
+| GitLab | `gitlab` | GitLab repos (PAT/OAuth2, releases/branches/tags with pattern matching) |
 | HashiCorp Consul | `consul` | Consul KV with native watch |
 | etcd | `etcd` | etcd KV with native watch |
 
@@ -796,6 +892,27 @@ sources:
       # Auth: Uses Application Default Credentials by default
       # Or: credentials_file: /path/to/service-account.json
 ```
+
+#### HTTP/HTTPS Endpoint Example
+
+```yaml
+sources:
+  - name: http-config
+    type: http
+    config:
+      url: https://config-server.internal/redirector/config.yaml
+      bearer_token: ${CONFIG_SERVER_TOKEN}
+      # Or basic auth:
+      # basic_auth:
+      #   username: admin
+      #   password: ${CONFIG_PASSWORD}
+      timeout: 10s
+      poll_interval: 30s
+      headers:
+        X-Custom-Header: "my-value"
+```
+
+The HTTP provider supports ETag-based caching. If the server returns an `ETag` header, subsequent requests include `If-None-Match` to avoid re-downloading unchanged configurations.
 
 #### GitLab Example
 
@@ -896,7 +1013,7 @@ stats:
 ## Docker
 
 ```dockerfile
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go build -o redirector ./cmd/redirector
@@ -973,9 +1090,8 @@ spec:
 the-redirector/
 ├── cmd/
 │   ├── redirector/          # Main server
-│   ├── redirector-lint/     # Config linter
-│   ├── redirector-tui/      # Live monitoring TUI
-│   └── config-syncer/       # Config sync service
+│   ├── redirector-sync/     # Config sync + lint service
+│   └── redirector-tui/      # Live monitoring TUI
 ├── internal/
 │   ├── config/              # YAML parsing, validation
 │   ├── router/              # Radix tree + regex routing
@@ -983,7 +1099,7 @@ the-redirector/
 │   ├── stats/               # Ring buffer stats
 │   ├── lint/                # Linting rules
 │   ├── logging/             # Log rotation
-│   └── providers/           # Config sources (file, GitHub, etc.)
+│   └── providers/           # Config sources (file, http, github, gitlab, s3, etc.)
 ├── pkg/redirect/            # Public types
 ├── config.yaml              # Sample configuration
 ├── syncer.yaml              # Sample syncer configuration
@@ -1047,9 +1163,14 @@ See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed status.
 - Prometheus metrics endpoint
 - Hot reload with fsnotify
 - Full AWS S3/Parameter Store/Secrets Manager integration
-- Azure, GCP, GitLab, Consul, etcd integrations
+- Azure Blob, GCP Cloud Storage, Consul, etcd integrations
+- GitHub integration (PAT + GitHub App JWT auth, release/branch/tag strategies, tag pattern matching)
+- GitLab integration (PAT, OAuth2 with auto token refresh, release/branch/tag strategies, tag pattern matching)
+- HTTP/HTTPS endpoint provider (bearer/basic auth, ETag caching, custom headers)
 - OpenTelemetry tracing
 - Load testing infrastructure
+- redirector-sync (formerly config-syncer) refactored to use provider Registry (no duplicate source implementations)
+- Comprehensive test coverage across all providers (unit + integration)
 
 **Upcoming:**
 - Multi-tenancy support

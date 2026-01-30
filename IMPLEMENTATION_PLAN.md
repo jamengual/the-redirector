@@ -192,8 +192,8 @@ This document outlines the phased implementation approach for building The Redir
 
 ---
 
-## Phase 4: Config-Syncer Service
-**Goal**: Separate service for configuration management with pluggable sources
+## Phase 4: redirector-sync Service
+**Goal**: Separate service for configuration management with pluggable sources and integrated linting
 **Status**: Complete ✓
 
 ### Stage 4.1: Pluggable Source Interface
@@ -211,40 +211,65 @@ This document outlines the phased implementation approach for building The Redir
 **Goal**: GitHub repository as configuration source
 **Status**: Complete ✓
 
-**Implementation**: `internal/providers/github.go`
+**Implementation**: `internal/providers/github.go`, `internal/providers/github_test.go`
 
 **Tasks**:
 - [x] Implement GitHubSource with GitHub App authentication
 - [x] Support release-based deployments (production)
 - [x] Support branch-based deployments (staging)
 - [x] Support tag-based deployments
-- [x] Webhook handler in config-syncer for real-time updates
+- [x] Webhook handler in redirector-sync for real-time updates
+- [x] GitHub App JWT generation and installation token exchange (golang-jwt/jwt/v5)
+- [x] PAT authentication support (GitHubPATAuth)
+- [x] Private key loading from file or inline PEM (PKCS1/PKCS8)
+- [x] Tag-based deployments with glob pattern matching (`tag_pattern` config)
+- [x] Fixed getFileContent to use io.ReadAll instead of resp.ContentLength
+- [x] Configurable baseURL for testability
+- [x] Comprehensive test suite (github_test.go) including:
+  - Constructor validation, auth types, strategies
+  - JWT generation and installation token exchange (with httptest mock)
+  - Token caching behavior
+  - RSA private key parsing (PKCS1 and PKCS8)
+  - Private key loading from file and inline PEM
+  - Tag pattern matching (glob filtering in Fetch and HandleWebhook)
+  - Validate, Fetch (release/branch/tag strategies), HandleWebhook
+- [x] Integration test (test/integration/providers_test.go)
+- [x] Fixed Accept header overwrite bug: `addAuthHeader()` was overwriting `Accept: application/vnd.github.raw` with `Accept: application/vnd.github+json`, causing GitHub Contents API to return JSON instead of raw file content
+- [x] Accept header regression test (TestGitHubSource_getFileContent_AcceptHeader)
+- [x] Debug logging (zerolog) for source creation, fetch flow, ref resolution, content parsing, and error diagnostics
 
-### Stage 4.3: Config-Syncer Service
-**Goal**: Standalone service that coordinates config sources
+### Stage 4.3: redirector-sync Service
+**Goal**: Standalone service that coordinates config sources with integrated linting
 **Status**: Complete ✓
 
-**Implementation**: `cmd/config-syncer/main.go`, `internal/syncer/syncer.go`
+**Implementation**: `cmd/redirector-sync/main.go`, `internal/syncer/syncer.go`
 
 **Tasks**:
-- [x] Create config-syncer binary
+- [x] Create redirector-sync binary (renamed from config-syncer, absorbed redirector-lint)
 - [x] Multi-source aggregation and merging
 - [x] Push config to multiple redirector targets
 - [x] Health checks for sources and targets
 - [x] Webhook HTTP server for GitHub/GitLab events
 - [x] Retry logic with exponential backoff
+- [x] Refactored to use provider Registry (providerAdapter bridges Source -> ConfigSource)
+- [x] Removed duplicate inline source implementations (fileSource, httpSource, githubSource)
+- [x] Fixed `sourceConfigToMap` to map `ref` field to provider `environment` and default to `strategy: "branch"` when ref is set
+- [x] Debug logging with secret redaction in source creation (`redactSecrets()` helper)
 
 ### Stage 4.4: GitLab Integration
 **Goal**: GitLab repository support
 **Status**: Complete ✓
 
-**Implementation**: `internal/providers/gitlab.go`
+**Implementation**: `internal/providers/gitlab.go`, `internal/providers/gitlab_test.go`
 
 **Tasks**:
 - [x] Implement GitLabSource
 - [x] GitLab App or Project Token auth
+- [x] OAuth2 authentication with automatic token refresh
 - [x] Release and branch tracking
-- [x] Webhook support
+- [x] Tag-based deployments with glob pattern matching (`tag_pattern` config)
+- [x] Webhook support (Release Hook, Push Hook, Tag Push Hook)
+- [x] Comprehensive test suite (gitlab_test.go) including OAuth refresh tests
 
 ### Stage 4.5: Multi-Team Configuration
 **Goal**: Support multiple teams with isolated config sources
@@ -266,11 +291,46 @@ This document outlines the phased implementation approach for building The Redir
 **Goal**: Enterprise-grade configuration from cloud services
 **Status**: Complete ✓
 
+### Stage 4.5: HTTP Provider
+**Goal**: HTTP/HTTPS endpoint as configuration source
+**Status**: Complete ✓
+
+**Implementation**: `internal/providers/http.go`, `internal/providers/http_test.go`
+
+**Tasks**:
+- [x] Implement HTTPSource with Registry registration ("http")
+- [x] Bearer token and Basic auth support
+- [x] Custom headers support
+- [x] ETag-based caching (If-None-Match / 304 Not Modified)
+- [x] Configurable timeout and poll interval
+- [x] Validate via HEAD request
+- [x] Comprehensive test suite (http_test.go) - 11 tests
+
+### Stage 4.6: File Provider Tests
+**Goal**: Unit tests for local file configuration source
+**Status**: Complete ✓
+
+**Implementation**: `internal/providers/file_test.go`
+
+**Tasks**:
+- [x] TestNewFileSource (constructor validation, poll interval)
+- [x] TestFileSource_Name, _SupportsWatch, _Registry
+- [x] TestFileSource_Validate (valid file, non-existent, directory)
+- [x] TestFileSource_Fetch (valid file, non-existent)
+- [x] TestFileSource_Close (including double-close safety, with watcher)
+- [x] TestFileSource_DefaultPollInterval
+
+---
+
+## Phase 5: Cloud Provider Configuration
+**Goal**: Enterprise-grade configuration from cloud services
+**Status**: Complete ✓
+
 ### Stage 5.1: AWS S3 Integration
 **Goal**: Load and watch configuration from S3
 **Status**: Complete ✓
 
-**Implementation**: `internal/providers/s3.go`
+**Implementation**: `internal/providers/s3.go`, `internal/providers/s3_test.go`
 
 **Tasks**:
 - [x] Implement S3ConfigSource
@@ -280,6 +340,9 @@ This document outlines the phased implementation approach for building The Redir
 - [x] IAM role authentication
 - [x] Cross-account access via role ARN
 - [x] S3-compatible endpoints (MinIO)
+- [x] Registry registration (init() with NewS3SourceFromMap)
+- [x] SupportsWatch() method
+- [x] Test suite (s3_test.go)
 
 ### Stage 5.2: AWS Parameter Store
 **Goal**: Configuration from SSM Parameter Store
@@ -495,14 +558,14 @@ This document outlines the phased implementation approach for building The Redir
 ### Configuration Linter
 **Status**: Complete ✓
 
-**Implementation**: `cmd/redirector-lint/main.go`, `internal/lint/lint.go`
+**Implementation**: `cmd/redirector-sync/main.go` (lint mode), `internal/lint/lint.go`
 
 **Tasks**:
 - [x] Configuration validation
 - [x] Rule conflict detection
 - [x] JSON and colored output modes
 - [x] CI-friendly exit codes
-- [x] Multi-team conflict detection (`--multi-source` mode)
+- [x] Multi-team conflict detection (automatic with multi-source syncer config)
 - [x] Cross-source overlap detection
 - [x] Per-source issue reporting
 
@@ -572,10 +635,26 @@ This document outlines the phased implementation approach for building The Redir
 
 ---
 
+## Test Coverage Summary
+
+All providers have comprehensive unit tests. Below is the test file mapping:
+
+| Provider | Source File | Test File | Tests |
+|----------|------------|-----------|-------|
+| File | `file.go` | `file_test.go` | 12 tests (constructor, name, watch, registry, validate, fetch, close) |
+| HTTP | `http.go` | `http_test.go` | 11 tests (constructor, name, watch, registry, validate, fetch with auth variants) |
+| GitHub | `github.go` | `github_test.go` | 26+ tests (constructor, auth types, JWT, token caching, PEM parsing, tag patterns, strategies, webhooks, Accept header regression) |
+| GitLab | `gitlab.go` | `gitlab_test.go` | 20+ tests (constructor, auth types, OAuth refresh, tag patterns, strategies, webhooks) |
+| S3 | `s3.go` | `s3_test.go` | 8 tests (constructor, name, watch, registry, poll interval, close) |
+
+Integration tests (`test/integration/providers_test.go`) cover: S3, Parameter Store, Secrets Manager, Azure Blob, GCS, Consul, etcd, and GitHub (httptest mock).
+
+---
+
 ## Technology Stack
 
 ### Core
-- **Language**: Go 1.21+
+- **Language**: Go 1.25+
 - **HTTP Server**: `github.com/valyala/fasthttp`
 - **Router**: Custom implementation with radix-like efficiency
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +18,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamengual/the-redirector/internal/config"
+	"github.com/jamengual/the-redirector/internal/lint"
+	"github.com/jamengual/the-redirector/internal/providers"
 )
 
 // SyncerConfig configures the config syncer service.
@@ -54,6 +59,9 @@ type SourceConfig struct {
 
 	// Priority determines failover order (higher = tried first)
 	Priority int `yaml:"priority"`
+
+	// Prefix is automatically prepended to all rule IDs from this source
+	Prefix string `yaml:"prefix"`
 
 	// Enabled allows disabling a source without removing it
 	Enabled bool `yaml:"enabled"`
@@ -180,16 +188,40 @@ type RetryConfig struct {
 	Delay    time.Duration `yaml:"delay"`
 }
 
+// ANSI color codes for lint output.
+const (
+	colorReset   = "\033[0m"
+	colorRed     = "\033[31m"
+	colorGreen   = "\033[32m"
+	colorYellow  = "\033[33m"
+	colorBlue    = "\033[34m"
+	colorMagenta = "\033[35m"
+	colorCyan    = "\033[36m"
+	colorBold    = "\033[1m"
+)
+
 func main() {
 	// Flags
 	configPath := flag.String("config", "syncer.yaml", "Path to syncer configuration")
 	oneShot := flag.Bool("one-shot", false, "Run once and exit")
 	dryRun := flag.Bool("dry-run", false, "Fetch config but don't write output")
+
+	// Lint flags
+	lintMode := flag.Bool("lint", false, "Lint mode: validate config and exit")
+	lintJSON := flag.Bool("lint-json", false, "Output lint results as JSON")
+	lintQuiet := flag.Bool("lint-quiet", false, "Only show lint errors (no warnings)")
+	lintConfig := flag.String("lint-config", "", "Path to redirector config file to lint directly (no source fetching)")
 	flag.Parse()
 
 	// Setup logging
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
+
+	// Lint mode: lint a local config file directly (no syncer config needed)
+	if *lintMode && *lintConfig != "" {
+		runSingleLint(*lintConfig, *lintJSON, *lintQuiet)
+		return
+	}
 
 	// Load syncer config
 	cfg, err := loadSyncerConfig(*configPath)
@@ -204,11 +236,17 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 
+	// Lint mode: fetch all sources from syncer config, lint each + detect cross-source conflicts
+	if *lintMode {
+		runSyncerLint(cfg, *lintJSON, *lintQuiet)
+		return
+	}
+
 	log.Info().
 		Int("sources", len(cfg.Sources)).
 		Str("interval", cfg.SyncInterval.String()).
 		Bool("one_shot", *oneShot).
-		Msg("Config syncer starting")
+		Msg("redirector-sync starting")
 
 	// Create syncer
 	syncer := NewSyncer(cfg)
@@ -427,31 +465,190 @@ func NewSyncer(cfg *SyncerConfig) *Syncer {
 }
 
 func (s *Syncer) createSource(cfg SourceConfig) ConfigSource {
+	// Build the config map for the provider Registry
+	configMap := sourceConfigToMap(cfg)
+	if configMap == nil {
+		log.Warn().Str("type", cfg.Type).Str("name", cfg.Name).Msg("No configuration for source type")
+		return nil
+	}
+
+	log.Debug().Str("type", cfg.Type).Str("name", cfg.Name).Interface("config_map", redactSecrets(configMap)).Msg("Creating source from config map")
+
+	// Map source type names to registry names where they differ
+	registryType := cfg.Type
+	switch cfg.Type {
+	case "azure":
+		registryType = "azureblob"
+	case "parameter_store":
+		registryType = "parameterstore"
+	case "secrets_manager":
+		registryType = "secretsmanager"
+	}
+
+	source, err := providers.Registry.Create(registryType, configMap)
+	if err != nil {
+		log.Error().Err(err).Str("type", cfg.Type).Str("name", cfg.Name).Msg("Failed to create source from Registry")
+		return nil
+	}
+
+	log.Debug().Str("type", cfg.Type).Str("name", cfg.Name).Str("source_name", source.Name()).Msg("Source created successfully")
+
+	return &providerAdapter{
+		source:   source,
+		name:     cfg.Name,
+		priority: cfg.Priority,
+	}
+}
+
+// redactSecrets returns a copy of the map with sensitive fields masked.
+func redactSecrets(m map[string]interface{}) map[string]interface{} {
+	redacted := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		switch k {
+		case "token", "bearer_token", "secret", "private_key", "connection_string":
+			redacted[k] = "***"
+		default:
+			redacted[k] = v
+		}
+	}
+	return redacted
+}
+
+// providerAdapter wraps a providers.Source to implement the cmd's ConfigSource interface.
+// providers.Source.Fetch returns *config.Config; ConfigSource.Fetch returns []byte.
+type providerAdapter struct {
+	source   providers.Source
+	name     string
+	priority int
+}
+
+func (a *providerAdapter) Name() string  { return a.name }
+func (a *providerAdapter) Priority() int { return a.priority }
+
+func (a *providerAdapter) Fetch(ctx context.Context) ([]byte, error) {
+	cfg, err := a.source.Fetch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(cfg)
+}
+
+func (a *providerAdapter) Validate(ctx context.Context) error {
+	return a.source.Validate(ctx)
+}
+
+// sourceConfigToMap converts a typed SourceConfig into a map[string]interface{}
+// suitable for the provider Registry.
+func sourceConfigToMap(cfg SourceConfig) map[string]interface{} {
 	switch cfg.Type {
 	case "file":
-		if cfg.File != nil {
-			return &fileSource{
-				name:     cfg.Name,
-				priority: cfg.Priority,
-				path:     cfg.File.Path,
+		if cfg.File == nil {
+			return nil
+		}
+		return map[string]interface{}{
+			"path": cfg.File.Path,
+		}
+	case "s3":
+		if cfg.S3 == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"bucket": cfg.S3.Bucket,
+			"key":    cfg.S3.Key,
+		}
+		if cfg.S3.Region != "" {
+			m["region"] = cfg.S3.Region
+		}
+		if cfg.S3.RoleARN != "" {
+			m["role_arn"] = cfg.S3.RoleARN
+		}
+		if cfg.S3.Endpoint != "" {
+			m["endpoint"] = cfg.S3.Endpoint
+		}
+		return m
+	case "azure":
+		if cfg.Azure == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"container": cfg.Azure.ContainerName,
+			"blob_name": cfg.Azure.BlobName,
+		}
+		if cfg.Azure.AccountName != "" {
+			m["storage_account"] = cfg.Azure.AccountName
+		}
+		if cfg.Azure.ConnectionString != "" {
+			m["connection_string"] = cfg.Azure.ConnectionString
+		}
+		if cfg.Azure.UseManagedIdentity {
+			m["use_default_credential"] = true
+		}
+		return m
+	case "github":
+		if cfg.GitHub == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"repository": cfg.GitHub.Owner + "/" + cfg.GitHub.Repo,
+		}
+		if cfg.GitHub.Path != "" {
+			m["path"] = cfg.GitHub.Path
+		}
+		if cfg.GitHub.Strategy != "" {
+			m["strategy"] = cfg.GitHub.Strategy
+		}
+		if cfg.GitHub.Ref != "" {
+			m["environment"] = cfg.GitHub.Ref
+			// Default to branch strategy when ref is set but strategy isn't
+			if cfg.GitHub.Strategy == "" {
+				m["strategy"] = "branch"
 			}
 		}
+		if cfg.GitHub.Token != "" {
+			m["token"] = cfg.GitHub.Token
+		}
+		if cfg.GitHub.AppID != 0 {
+			m["app"] = map[string]interface{}{
+				"app_id":           float64(cfg.GitHub.AppID),
+				"installation_id":  float64(cfg.GitHub.InstallationID),
+				"private_key_path": cfg.GitHub.PrivateKeyPath,
+			}
+		}
+		return m
 	case "http":
-		if cfg.HTTP != nil {
-			return &httpSource{
-				name:     cfg.Name,
-				priority: cfg.Priority,
-				url:      cfg.HTTP.URL,
-				headers:  cfg.HTTP.Headers,
-				timeout:  cfg.HTTP.Timeout,
-			}
+		if cfg.HTTP == nil {
+			return nil
 		}
-	// Additional sources (S3, Azure, GitHub) would be implemented here
-	// They are stubbed for now - see internal/providers for full implementations
+		m := map[string]interface{}{
+			"url": cfg.HTTP.URL,
+		}
+		if cfg.HTTP.Headers != nil {
+			m["headers"] = cfg.HTTP.Headers
+		}
+		if cfg.HTTP.Timeout != 0 {
+			m["timeout"] = cfg.HTTP.Timeout.String()
+		}
+		if cfg.HTTP.BearerToken != "" {
+			m["bearer_token"] = cfg.HTTP.BearerToken
+		}
+		return m
+	case "parameter_store", "parameterstore":
+		if cfg.ParameterStore == nil {
+			return nil
+		}
+		m := map[string]interface{}{
+			"name": cfg.ParameterStore.Name,
+		}
+		if cfg.ParameterStore.Region != "" {
+			m["region"] = cfg.ParameterStore.Region
+		}
+		if cfg.ParameterStore.WithDecryption {
+			m["with_decryption"] = true
+		}
+		return m
 	default:
-		log.Warn().Str("type", cfg.Type).Msg("Unknown source type")
+		return nil
 	}
-	return nil
 }
 
 // SyncOnce performs a single sync operation.
@@ -472,6 +669,31 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 			Str("source", src.Name()).
 			Int("bytes", len(data)).
 			Msg("Successfully fetched config")
+
+		// Lint the fetched config before writing
+		parsedCfg, parseErr := config.ParseBytes(data)
+		if parseErr != nil {
+			log.Error().Err(parseErr).Str("source", src.Name()).Msg("Failed to parse fetched config")
+			lastErr = parseErr
+			continue
+		}
+
+		linter := lint.New(parsedCfg)
+		lintResult := linter.Lint()
+
+		if lintResult.HasErrors() {
+			for _, issue := range lintResult.Errors() {
+				log.Error().Str("rule_id", issue.RuleID).Str("source", src.Name()).Msg(issue.Message)
+			}
+			s.mu.Lock()
+			s.syncErrors++
+			s.mu.Unlock()
+			return fmt.Errorf("lint errors found in config from source %s", src.Name())
+		}
+
+		for _, issue := range lintResult.Warnings() {
+			log.Warn().Str("rule_id", issue.RuleID).Str("source", src.Name()).Msg(issue.Message)
+		}
 
 		if dryRun {
 			log.Info().Msg("Dry run - not writing output")
@@ -747,52 +969,282 @@ func (s *Syncer) pushToSingleAPI(ctx context.Context, cfg *APIOutputConfig, data
 	return nil
 }
 
-// fileSource implements ConfigSource for local files.
-type fileSource struct {
-	name     string
-	priority int
-	path     string
-}
+// --- Lint mode functions (ported from cmd/redirector-lint) ---
 
-func (s *fileSource) Name() string  { return s.name }
-func (s *fileSource) Priority() int { return s.priority }
-
-func (s *fileSource) Fetch(ctx context.Context) ([]byte, error) {
-	return os.ReadFile(s.path)
-}
-
-func (s *fileSource) Validate(ctx context.Context) error {
-	info, err := os.Stat(s.path)
+func runSingleLint(configPath string, jsonOut, quiet bool) {
+	cfg, err := config.LoadDirectory(configPath)
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "%sError:%s Failed to load config: %v\n", colorRed, colorReset, err)
+		os.Exit(1)
 	}
-	if info.IsDir() {
-		return fmt.Errorf("path is a directory, not a file")
+
+	linter := lint.New(cfg)
+	result := linter.Lint()
+
+	if jsonOut {
+		outputJSON(result)
+	} else {
+		outputText(result, quiet)
 	}
-	return nil
+
+	if result.HasErrors() {
+		os.Exit(1)
+	}
 }
 
-// httpSource implements ConfigSource for HTTP/HTTPS URLs.
-type httpSource struct {
-	name     string
-	priority int
-	url      string
-	headers  map[string]string
-	timeout  time.Duration
-}
+// runSyncerLint fetches all sources defined in the syncer config, lints each,
+// and runs cross-source conflict detection when multiple sources exist.
+func runSyncerLint(cfg *SyncerConfig, jsonOut, quiet bool) {
+	syncer := NewSyncer(cfg)
+	ctx := context.Background()
 
-func (s *httpSource) Name() string  { return s.name }
-func (s *httpSource) Priority() int { return s.priority }
+	log.Info().Int("sources", len(syncer.sources)).Msg("Lint mode: fetching all sources")
 
-func (s *httpSource) Fetch(ctx context.Context) ([]byte, error) {
-	// TODO: Implement HTTP GET with timeout and headers
-	// This is a stub - see internal/providers/http.go for full implementation
-	return nil, fmt.Errorf("HTTP source not yet implemented in syncer")
-}
-
-func (s *httpSource) Validate(ctx context.Context) error {
-	if s.url == "" {
-		return fmt.Errorf("URL is required")
+	type fetchedSource struct {
+		name     string
+		prefix   string
+		priority int
+		config   *config.Config
 	}
-	return nil
+
+	var fetched []fetchedSource
+	for i, src := range syncer.sources {
+		log.Info().Str("source", src.Name()).Msg("Fetching source for lint")
+
+		data, err := src.Fetch(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError:%s Failed to fetch source '%s': %v\n", colorRed, colorReset, src.Name(), err)
+			os.Exit(1)
+		}
+
+		parsedCfg, err := config.ParseBytes(data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError:%s Failed to parse config from source '%s': %v\n", colorRed, colorReset, src.Name(), err)
+			os.Exit(1)
+		}
+
+		// Look up prefix from the original SourceConfig
+		prefix := ""
+		for _, srcCfg := range cfg.Sources {
+			if srcCfg.Name == src.Name() {
+				prefix = srcCfg.Prefix
+				break
+			}
+		}
+
+		fetched = append(fetched, fetchedSource{
+			name:     src.Name(),
+			prefix:   prefix,
+			priority: src.Priority(),
+			config:   parsedCfg,
+		})
+
+		log.Info().
+			Str("source", src.Name()).
+			Int("rules", len(parsedCfg.Rules)).
+			Int("index", i).
+			Msg("Source fetched and parsed")
+	}
+
+	if len(fetched) == 0 {
+		fmt.Fprintf(os.Stderr, "%sError:%s No sources configured or enabled\n", colorRed, colorReset)
+		os.Exit(1)
+	}
+
+	// Single source: simple lint
+	if len(fetched) == 1 {
+		linter := lint.New(fetched[0].config)
+		result := linter.Lint()
+		if jsonOut {
+			outputJSON(result)
+		} else {
+			outputText(result, quiet)
+		}
+		if result.HasErrors() {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Multiple sources: multi-source lint with conflict detection
+	sources := make([]lint.SourceInput, len(fetched))
+	for i, f := range fetched {
+		sources[i] = lint.SourceInput{
+			Name:     f.name,
+			Prefix:   f.prefix,
+			Priority: f.priority,
+			Config:   f.config,
+		}
+	}
+
+	linter := lint.NewMultiSource(sources)
+	result := linter.Lint()
+
+	if jsonOut {
+		outputMultiSourceJSON(result)
+	} else {
+		outputMultiSourceText(result, quiet)
+	}
+
+	if result.HasErrors() {
+		os.Exit(1)
+	}
+}
+
+func outputJSON(result *lint.Result) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(result)
+}
+
+func outputText(result *lint.Result, quiet bool) {
+	fmt.Printf("%s%sThe Redirector - Config Linter%s\n", colorBold, colorBlue, colorReset)
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Printf("Loaded %d rules\n\n", result.RulesCount)
+
+	errors := result.Errors()
+	warnings := result.Warnings()
+	var infos []lint.Issue
+	for _, issue := range result.Issues {
+		if issue.Severity == lint.SeverityInfo {
+			infos = append(infos, issue)
+		}
+	}
+
+	if len(errors) > 0 {
+		fmt.Printf("%s%s✗ ERRORS (%d)%s\n", colorBold, colorRed, len(errors), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		for _, issue := range errors {
+			printIssue(issue)
+		}
+		fmt.Println()
+	}
+
+	if len(warnings) > 0 && !quiet {
+		fmt.Printf("%s%s⚠ WARNINGS (%d)%s\n", colorBold, colorYellow, len(warnings), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		for _, issue := range warnings {
+			printIssue(issue)
+		}
+		fmt.Println()
+	}
+
+	if len(infos) > 0 && !quiet {
+		fmt.Printf("%s%sℹ SUGGESTIONS (%d)%s\n", colorBold, colorBlue, len(infos), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		for _, issue := range infos {
+			printIssue(issue)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if len(errors) == 0 && len(warnings) == 0 {
+		fmt.Printf("%s%s✓ No issues found!%s\n", colorBold, colorGreen, colorReset)
+	} else {
+		fmt.Printf("Found: %s%d errors%s, %s%d warnings%s, %d suggestions\n",
+			colorRed, len(errors), colorReset,
+			colorYellow, len(warnings), colorReset,
+			len(infos))
+	}
+}
+
+func outputMultiSourceJSON(result *lint.MultiSourceResult) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(result)
+}
+
+func outputMultiSourceText(result *lint.MultiSourceResult, quiet bool) {
+	fmt.Printf("%s%sThe Redirector - Multi-Team Config Linter%s\n", colorBold, colorBlue, colorReset)
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	fmt.Printf("Sources: %d | Total Rules: %d\n", len(result.Sources), result.TotalRules)
+	for _, src := range result.Sources {
+		fmt.Printf("  • %s%s%s: %d rules\n", colorCyan, src, colorReset, result.RulesPerSource[src])
+	}
+	fmt.Println()
+
+	if len(result.Conflicts) > 0 {
+		fmt.Printf("%s%s⚠ TEAM CONFLICTS (%d)%s\n", colorBold, colorRed, len(result.Conflicts), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		fmt.Println("These rules from different teams may conflict at runtime:")
+		fmt.Println()
+
+		for i, conflict := range result.Conflicts {
+			fmt.Printf("  %s%d. %s%s\n", colorYellow, i+1, conflict.Description, colorReset)
+			fmt.Printf("     Path: %s%s%s\n", colorMagenta, conflict.Path, colorReset)
+			fmt.Printf("     Teams: %s\n", strings.Join(conflict.Sources, " vs "))
+			fmt.Printf("     Rules: %s\n", strings.Join(conflict.RuleIDs, ", "))
+			fmt.Printf("     Type: %s\n", conflict.MatchType)
+			fmt.Println()
+		}
+	}
+
+	errors := make([]lint.Issue, 0)
+	warnings := make([]lint.Issue, 0)
+	for _, issue := range result.Issues {
+		switch issue.Severity {
+		case lint.SeverityError:
+			errors = append(errors, issue)
+		case lint.SeverityWarning:
+			warnings = append(warnings, issue)
+		}
+	}
+
+	if len(errors) > 0 {
+		fmt.Printf("%s%s✗ ERRORS (%d)%s\n", colorBold, colorRed, len(errors), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		for _, issue := range errors {
+			printIssue(issue)
+		}
+		fmt.Println()
+	}
+
+	if len(warnings) > 0 && !quiet {
+		fmt.Printf("%s%s⚠ WARNINGS (%d)%s\n", colorBold, colorYellow, len(warnings), colorReset)
+		fmt.Println("─────────────────────────────────────────────────────────────────")
+		for _, issue := range warnings {
+			printIssue(issue)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if len(result.Conflicts) == 0 && len(errors) == 0 && len(warnings) == 0 {
+		fmt.Printf("%s%s✓ No conflicts or issues found between teams!%s\n", colorBold, colorGreen, colorReset)
+	} else {
+		fmt.Printf("Found: %s%d conflicts%s, %s%d errors%s, %s%d warnings%s\n",
+			colorRed, len(result.Conflicts), colorReset,
+			colorRed, len(errors), colorReset,
+			colorYellow, len(warnings), colorReset)
+
+		if len(result.Conflicts) > 0 {
+			fmt.Printf("\n%sRecommendation:%s Teams should coordinate on conflicting paths or use\n", colorBold, colorReset)
+			fmt.Printf("different path prefixes to avoid runtime conflicts.\n")
+		}
+	}
+}
+
+func printIssue(issue lint.Issue) {
+	var color string
+	switch issue.Severity {
+	case lint.SeverityError:
+		color = colorRed
+	case lint.SeverityWarning:
+		color = colorYellow
+	case lint.SeverityInfo:
+		color = colorBlue
+	}
+
+	ruleInfo := ""
+	if issue.RuleID != "" {
+		ruleInfo = fmt.Sprintf("[%s] ", issue.RuleID)
+	}
+
+	fmt.Printf("  %s%s%s%s\n", color, ruleInfo, issue.Message, colorReset)
+
+	if issue.Suggestion != "" {
+		fmt.Printf("    %s→ %s%s\n", colorGreen, issue.Suggestion, colorReset)
+	}
 }

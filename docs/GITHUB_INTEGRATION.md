@@ -34,7 +34,7 @@ The GitHub integration allows you to:
                               │ (release.published, push)
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Config-Syncer                                │
+│                       redirector-sync                                │
 │                                                                     │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐           │
 │   │   GitHub    │───▶│  Validate   │───▶│    Push     │           │
@@ -64,7 +64,7 @@ The GitHub integration allows you to:
 
 2. Configure the app:
    ```
-   App Name: redirector-config-syncer
+   App Name: redirector-sync
    Homepage URL: https://your-org.github.io/the-redirector
    Webhook URL: https://syncer.your-domain.com/webhook/github
    Webhook Secret: <generate-secure-secret>
@@ -98,12 +98,48 @@ After installation, note:
 - **App ID**: Found on the App settings page
 - **Installation ID**: Found in the URL after installing (e.g., `/installations/12345678`)
 
-## Configuration
+## Authentication Methods
 
-### Config-Syncer Configuration
+### Method 1: Personal Access Token (PAT) - Simplest
+
+Best for small teams or development environments.
 
 ```yaml
-# config-syncer.yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    token: ${GITHUB_TOKEN}
+```
+
+### Method 2: GitHub App - Recommended for Production
+
+Best for production. Tokens auto-rotate, permissions are fine-grained, and the App is not tied to a user.
+
+```yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    app:
+      app_id: 123456
+      installation_id: 12345678
+      private_key_path: /secrets/github-app-key.pem
+      # Or inline: private_key: ${GITHUB_APP_PRIVATE_KEY}
+```
+
+The provider handles the full GitHub App auth flow:
+1. Loads the RSA private key (PKCS1 or PKCS8 PEM format)
+2. Creates a JWT signed with RS256 (iss=AppID, 10min expiry)
+3. Exchanges JWT for an installation access token via `POST /app/installations/{id}/access_tokens`
+4. Caches the token and auto-refreshes 5 minutes before expiry
+
+## Configuration
+
+### redirector-sync Configuration
+
+```yaml
+# syncer.yaml
 version: "1.0"
 
 sources:
@@ -113,10 +149,14 @@ sources:
     strategy: release
     environment: production
 
+    # Auth option 1: PAT
+    token: ${GITHUB_TOKEN}
+
+    # Auth option 2: GitHub App
     app:
       app_id: 123456
       installation_id: 12345678
-      private_key: ${GITHUB_APP_PRIVATE_KEY}
+      private_key_path: /secrets/github-app-key.pem
 
     webhook_secret: ${GITHUB_WEBHOOK_SECRET}
 
@@ -130,8 +170,11 @@ targets:
 ### Environment Variables
 
 ```bash
-# GitHub App private key (PEM format, base64 encoded for env var)
-export GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem | base64)"
+# For PAT auth
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+
+# For GitHub App auth - private key as PEM string
+export GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)"
 
 # Webhook secret for validating payloads
 export GITHUB_WEBHOOK_SECRET="your-webhook-secret"
@@ -182,7 +225,29 @@ sources:
 | staging | staging |
 | development | develop |
 
-### Strategy 3: Pre-release (Staging with Releases)
+### Strategy 3: Tag-Based with Pattern Matching
+
+Deploy when a tag matching a glob pattern is created.
+
+```yaml
+sources:
+  - type: github
+    repository: "my-org/redirect-config"
+    path: "config/production.yaml"
+    strategy: tag
+    tag_pattern: "v*"           # Only deploy on tags starting with "v"
+```
+
+**Pattern examples:**
+| Pattern | Matches | Doesn't Match |
+|---------|---------|---------------|
+| `v*` | `v1.0.0`, `v2.0-rc1` | `release-1.0`, `latest` |
+| `config-*` | `config-1.0`, `config-prod` | `v1.0`, `release` |
+| `release-[0-9]*` | `release-1`, `release-23` | `release-beta` |
+
+Without `tag_pattern`, the latest tag (by date) is always used. With a pattern, only tags matching the glob are considered.
+
+### Strategy 4: Pre-release (Staging with Releases)
 
 Use GitHub pre-releases for staging.
 
@@ -266,7 +331,7 @@ jobs:
 
 ### Webhook Handler
 
-The Config-Syncer exposes a webhook endpoint:
+The redirector-sync exposes a webhook endpoint:
 
 ```
 POST /webhook/github
@@ -293,8 +358,10 @@ func validateWebhook(payload []byte, signature, secret string) bool {
 | Event | Action | Strategy | Result |
 |-------|--------|----------|--------|
 | `release` | `published` | release | Deploy new release |
-| `push` | - | branch | Deploy branch update |
-| `create` | ref_type=tag | tag | Deploy new tag |
+| `push` | - | branch | Deploy branch update (only if matching env branch) |
+| `create` | ref_type=tag | tag | Deploy new tag (filtered by `tag_pattern` if set) |
+
+When `tag_pattern` is configured, only tags matching the glob pattern trigger deployment. Non-matching tag creation events are silently ignored.
 
 ## Release Workflow
 
@@ -346,7 +413,7 @@ gh release delete v1.2.0  # Delete bad release
 # Previous release (v1.1.0) will be detected as latest
 ```
 
-### Using Config-Syncer API
+### Using redirector-sync API
 
 ```bash
 # List available versions
@@ -409,6 +476,56 @@ groups:
         annotations:
           summary: "No GitHub webhooks received in 15 minutes"
 ```
+
+## Troubleshooting
+
+### Enable Debug Logging
+
+The redirector-sync and GitHub provider support debug-level logging via zerolog. Add `log_level: debug` to your syncer config:
+
+```yaml
+# syncer.yaml
+log_level: debug   # trace, debug, info (default), warn, error, fatal
+
+sources:
+  - name: "github-config"
+    type: github
+    # ...
+```
+
+Debug output includes:
+- **Source creation**: config map (with secrets redacted), auth type, strategy, environment
+- **Fetch flow**: strategy resolution, ref lookup, file URL, content size
+- **Parse diagnostics**: on failure, logs a preview of the fetched content (first 200 chars)
+- **Push retries**: target name, attempt number, backoff delay
+
+### Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `no suitable release found for environment production` | Default strategy is `release` but no GitHub Releases exist | Set `strategy: branch` and `ref: <branch-name>` in your syncer config |
+| `parsing config: validating config: no rules defined` | Fetched content is not valid redirect config YAML | Enable debug logging to see content preview; check your config file has a `rules:` section |
+| `getting auth token: PAT token is empty` | Token env var not set or empty | Verify `${GITHUB_TOKEN}` is exported in your environment |
+| `GitHub API returned 404` | Repository, path, or ref not found | Check owner/repo, file path, and branch/tag name |
+| `GitHub API returned 401` | Invalid or expired token | Regenerate PAT or check GitHub App private key |
+
+### redirector-sync `ref` Field
+
+When using the redirector-sync YAML format, the `ref` field maps to the provider's `environment` parameter. If `ref` is set without an explicit `strategy`, the syncer defaults to `strategy: "branch"`:
+
+```yaml
+sources:
+  - name: "my-config"
+    type: github
+    github:
+      owner: "my-org"
+      repo: "my-config-repo"
+      path: "config.yaml"
+      ref: "main"              # Maps to environment, defaults to branch strategy
+      token: "${GITHUB_TOKEN}"
+```
+
+This is equivalent to setting `strategy: branch` and `environment: main` in the provider config directly.
 
 ## Security Best Practices
 

@@ -1,7 +1,9 @@
 package ratelimit
 
 import (
+	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +247,86 @@ func TestCleanup(t *testing.T) {
 	if stats.ActiveIPLimiters != 0 {
 		t.Errorf("Expected 0 IP limiters after cleanup, got %d", stats.ActiveIPLimiters)
 	}
+}
+
+func TestConcurrentAllow(t *testing.T) {
+	cfg := &Config{
+		Enabled:     true,
+		GlobalRPS:   100000,
+		GlobalBurst: 200000,
+		PerIPRPS:    1000,
+		PerIPBurst:  2000,
+	}
+	l := New(cfg)
+	defer l.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/test")
+			ctx.SetRemoteAddr(&net.TCPAddr{
+				IP:   net.ParseIP(fmt.Sprintf("10.0.0.%d", idx%256)),
+				Port: 12345,
+			})
+			for j := 0; j < 100; j++ {
+				l.Allow(ctx)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify stats are consistent after concurrent access
+	stats := l.Stats()
+	if stats.ActiveIPLimiters < 1 {
+		t.Errorf("Expected at least 1 IP limiter, got %d", stats.ActiveIPLimiters)
+	}
+}
+
+func TestConcurrentAllowAndStats(t *testing.T) {
+	cfg := &Config{
+		Enabled:     true,
+		GlobalRPS:   100000,
+		GlobalBurst: 200000,
+		PerIPRPS:    1000,
+		PerIPBurst:  2000,
+	}
+	l := New(cfg)
+	defer l.Close()
+
+	var wg sync.WaitGroup
+
+	// Writers: concurrent Allow calls
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/test")
+			ctx.SetRemoteAddr(&net.TCPAddr{
+				IP:   net.ParseIP(fmt.Sprintf("10.0.%d.%d", idx/256, idx%256)),
+				Port: 12345,
+			})
+			for j := 0; j < 50; j++ {
+				l.Allow(ctx)
+			}
+		}(i)
+	}
+
+	// Readers: concurrent Stats calls
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_ = l.Stats()
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestStats(t *testing.T) {

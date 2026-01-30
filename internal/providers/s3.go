@@ -18,6 +18,53 @@ import (
 	"github.com/jamengual/the-redirector/internal/config"
 )
 
+func init() {
+	Registry.Register("s3", NewS3SourceFromMap)
+}
+
+// NewS3SourceFromMap creates a new S3 source from a configuration map.
+func NewS3SourceFromMap(cfg map[string]interface{}) (Source, error) {
+	bucket, ok := cfg["bucket"].(string)
+	if !ok || bucket == "" {
+		return nil, fmt.Errorf("s3 source requires 'bucket'")
+	}
+
+	key, ok := cfg["key"].(string)
+	if !ok || key == "" {
+		return nil, fmt.Errorf("s3 source requires 'key'")
+	}
+
+	sourceCfg := S3SourceConfig{
+		Bucket:       bucket,
+		Key:          key,
+		PollInterval: 5 * time.Minute,
+	}
+
+	if region, ok := cfg["region"].(string); ok {
+		sourceCfg.Region = region
+	}
+
+	if roleARN, ok := cfg["role_arn"].(string); ok {
+		sourceCfg.RoleARN = roleARN
+	}
+
+	if endpoint, ok := cfg["endpoint"].(string); ok {
+		sourceCfg.Endpoint = endpoint
+	}
+
+	if interval, ok := cfg["poll_interval"].(string); ok {
+		if d, err := time.ParseDuration(interval); err == nil {
+			sourceCfg.PollInterval = d
+		}
+	}
+
+	source, err := NewS3Source(context.Background(), sourceCfg)
+	if err != nil {
+		return nil, err
+	}
+	return source, nil
+}
+
 // S3SourceConfig configures the S3 source.
 type S3SourceConfig struct {
 	// Bucket name
@@ -268,6 +315,11 @@ func (s *S3Source) Validate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// SupportsWatch returns true - S3 supports polling-based watching.
+func (s *S3Source) SupportsWatch() bool {
+	return true
 }
 
 // PollInterval returns the configured poll interval.

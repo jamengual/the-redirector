@@ -71,51 +71,54 @@ The Redirector aims to be the definitive solution for managing URL redirects at 
 
 ## Feature Matrix
 
-### Core Features (Phase 1)
-- [ ] HTTP/HTTPS redirect handling
-- [ ] 301/302/307/308 redirect types
-- [ ] Exact path matching
-- [ ] Prefix matching
-- [ ] Basic regex patterns
-- [ ] Custom response headers
-- [ ] Health check endpoint
-- [ ] Prometheus metrics
+### Core Features (Phase 1) - Complete
+- [x] HTTP/HTTPS redirect handling
+- [x] 301/302/307/308 redirect types
+- [x] Exact path matching
+- [x] Prefix matching
+- [x] Basic regex patterns
+- [x] Custom response headers
+- [x] Health check endpoint
+- [x] Prometheus metrics
 
-### Advanced Routing (Phase 2)
-- [ ] Full regex with capture groups
-- [ ] Glob patterns (`/**`, `/*/path/*`)
-- [ ] Query string preservation/manipulation
-- [ ] Host-based routing
-- [ ] Path rewriting with substitution
-- [ ] Conditional redirects (headers, user-agent)
+### Advanced Routing (Phase 2) - Complete
+- [x] Full regex with capture groups
+- [x] Glob patterns (`/**`, `/*/path/*`)
+- [x] Query string preservation/manipulation
+- [x] Host-based routing
+- [x] Path rewriting with substitution
+- [x] Conditional redirects (headers, user-agent)
 
-### Configuration Management (Phase 3)
-- [ ] YAML/JSON/TOML file configuration
-- [ ] Environment variable injection
-- [ ] Hot-reload without restart
-- [ ] Configuration validation
-- [ ] REST API for config push
-- [ ] Webhook notifications
+### Configuration Management (Phase 3) - Complete
+- [x] YAML/JSON/TOML file configuration
+- [x] Environment variable injection
+- [x] Hot-reload without restart
+- [x] Configuration validation
+- [x] REST API for config push
+- [x] Webhook notifications
 
-### Distributed Configuration (Phase 4)
-- [ ] AWS S3 pull with polling/events
-- [ ] AWS Parameter Store integration
-- [ ] AWS Secrets Manager integration
-- [ ] Azure Blob Storage
-- [ ] GCP Cloud Storage
-- [ ] HashiCorp Consul
-- [ ] etcd support
-- [ ] Configuration versioning
+### Distributed Configuration (Phase 4) - Complete
+- [x] AWS S3 pull with polling/events
+- [x] AWS Parameter Store integration
+- [x] AWS Secrets Manager integration
+- [x] Azure Blob Storage
+- [x] GCP Cloud Storage
+- [x] HashiCorp Consul
+- [x] etcd support
+- [x] Configuration versioning
+- [x] GitHub integration (PAT + GitHub App auth, release/branch/tag strategies, tag pattern matching)
+- [x] GitLab integration (PAT, OAuth2 with token refresh, release/branch/tag strategies, tag pattern matching)
+- [x] HTTP/HTTPS endpoint integration (bearer/basic auth, ETag caching, custom headers)
 
-### Enterprise Features (Phase 5)
+### Enterprise Features (Phase 5) - Mostly Complete
 - [ ] Multi-tenant support
-- [ ] Role-based access control
-- [ ] Audit logging
-- [ ] Rate limiting
+- [x] Role-based access control
+- [x] Audit logging
+- [x] Rate limiting
 - [ ] Circuit breaker patterns
 - [ ] A/B testing support
 - [ ] Analytics and reporting
-- [ ] Admin dashboard UI
+- [x] TUI dashboard (bubbletea)
 
 ## Technical Decisions
 

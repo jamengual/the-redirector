@@ -93,7 +93,7 @@ jobs:
           fi
 
           # Build all binaries
-          for cmd in redirector redirector-lint redirector-tui config-syncer; do
+          for cmd in redirector redirector-sync redirector-tui; do
             CGO_ENABLED=0 go build \
               -ldflags="-s -w -X main.version=dev -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -o "dist/${cmd}-${GOOS}-${GOARCH}${EXT}" \

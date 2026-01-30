@@ -30,6 +30,22 @@ import (
 	"github.com/jamengual/the-redirector/internal/versioning"
 )
 
+// Header and content-type constants used throughout the server.
+const (
+	headerRedirectedBy = "X-Redirected-By"
+	headerMatchedBy    = "X-Matched-By"
+	headerRuleID       = "X-Rule-ID"
+	headerValueApp     = "the-redirector"
+	contentTypeJSON    = "application/json"
+)
+
+// writeJSONError writes a JSON error response with the given status code and message.
+func writeJSONError(ctx *fasthttp.RequestCtx, status int, message string) {
+	ctx.SetStatusCode(status)
+	ctx.SetContentType(contentTypeJSON)
+	ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, message))
+}
+
 // Server handles HTTP requests and redirects.
 type Server struct {
 	cfg             *config.Config
@@ -310,6 +326,21 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 		defer s.metrics.DecrementInFlight()
 	}
 
+	// Early host rejection — avoid processing rules for unknown domains
+	s.mu.RLock()
+	allowed := s.router.IsAllowedHost(host)
+	s.mu.RUnlock()
+
+	if !allowed {
+		if s.metrics != nil {
+			s.metrics.RecordHostRejected()
+		}
+		log.Debug().Str("host", host).Msg("Rejected unknown host")
+		ctx.SetStatusCode(421) // Misdirected Request
+		ctx.SetBodyString("Misdirected Request")
+		return
+	}
+
 	s.mu.RLock()
 	rule, captures := s.router.Match(host, path)
 	s.mu.RUnlock()
@@ -378,8 +409,8 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 			ctx.SetBodyString(rule.Redirect.Body)
 		}
 		// Set default headers
-		ctx.Response.Header.Set("X-Matched-By", "the-redirector")
-		ctx.Response.Header.Set("X-Rule-ID", rule.ID)
+		ctx.Response.Header.Set(headerMatchedBy, headerValueApp)
+		ctx.Response.Header.Set(headerRuleID, rule.ID)
 		return
 	}
 
@@ -409,8 +440,8 @@ func (s *Server) handleRedirect(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Set default headers
-	ctx.Response.Header.Set("X-Redirected-By", "the-redirector")
-	ctx.Response.Header.Set("X-Rule-ID", rule.ID)
+	ctx.Response.Header.Set(headerRedirectedBy, headerValueApp)
+	ctx.Response.Header.Set(headerRuleID, rule.ID)
 
 	// Log the redirect
 	log.Debug().
@@ -579,14 +610,14 @@ func (s *Server) requirePermission(ctx *fasthttp.RequestCtx, perm auth.Permissio
 	if !ok {
 		// This shouldn't happen if middleware ran, but handle gracefully
 		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		ctx.SetBodyString(`{"error":"unauthorized","message":"authentication required"}`)
 		return false
 	}
 
 	if !principal.HasPermission(perm) {
 		ctx.SetStatusCode(fasthttp.StatusForbidden)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		ctx.SetBodyString(`{"error":"forbidden","message":"permission denied: ` + string(perm) + `"}`)
 		return false
 	}
@@ -597,13 +628,13 @@ func (s *Server) requirePermission(ctx *fasthttp.RequestCtx, perm auth.Permissio
 func (s *Server) handleHealth(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(`{"status":"healthy"}`)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleReady(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(`{"status":"ready"}`)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleMetrics(ctx *fasthttp.RequestCtx) {
@@ -620,7 +651,7 @@ func (s *Server) handleMetrics(ctx *fasthttp.RequestCtx) {
 func (s *Server) handleConfig(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(fmt.Sprintf(`{"version":"%s","rules_count":%d}`, s.cfg.Version, len(s.cfg.Rules)))
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleRules(ctx *fasthttp.RequestCtx) {
@@ -630,7 +661,7 @@ func (s *Server) handleRules(ctx *fasthttp.RequestCtx) {
 	// Simple JSON output of rules
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(fmt.Sprintf(`{"count":%d}`, len(s.cfg.Rules)))
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 // ReloadConfig reloads configuration from the given path (file or directory).
@@ -701,9 +732,7 @@ func (s *Server) ReloadConfig(path string) error {
 
 func (s *Server) handleStats(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats not enabled"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats not enabled")
 		return
 	}
 
@@ -712,20 +741,18 @@ func (s *Server) handleStats(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleStatsLive(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats not enabled"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats not enabled")
 		return
 	}
 
@@ -742,20 +769,18 @@ func (s *Server) handleStatsLive(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleStatsRule(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats not enabled"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats not enabled")
 		return
 	}
 
@@ -765,7 +790,7 @@ func (s *Server) handleStatsRule(ctx *fasthttp.RequestCtx) {
 	if ruleID == "" {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		ctx.SetBodyString(`{"error":"rule ID required"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -773,7 +798,7 @@ func (s *Server) handleStatsRule(ctx *fasthttp.RequestCtx) {
 	if !found {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString(`{"error":"rule not found"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -781,55 +806,49 @@ func (s *Server) handleStatsRule(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleStatsEnable(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats collector not initialized"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats collector not initialized")
 		return
 	}
 
 	s.stats.Enable()
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(`{"status":"enabled"}`)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleStatsDisable(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats collector not initialized"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats collector not initialized")
 		return
 	}
 
 	s.stats.Disable()
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(`{"status":"disabled"}`)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleStatsReset(ctx *fasthttp.RequestCtx) {
 	if s.stats == nil {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-		ctx.SetBodyString(`{"error":"stats collector not initialized"}`)
-		ctx.SetContentType("application/json")
+		writeJSONError(ctx, fasthttp.StatusServiceUnavailable, "stats collector not initialized")
 		return
 	}
 
 	s.stats.Reset()
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(`{"status":"reset"}`)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleReload(ctx *fasthttp.RequestCtx) {
@@ -837,14 +856,14 @@ func (s *Server) handleReload(ctx *fasthttp.RequestCtx) {
 	if !ctx.IsPost() {
 		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
 		ctx.SetBodyString(`{"error":"method not allowed, use POST"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	if s.configPath == "" {
 		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 		ctx.SetBodyString(`{"error":"config path not set"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -852,7 +871,7 @@ func (s *Server) handleReload(ctx *fasthttp.RequestCtx) {
 	if err := s.ReloadConfig(s.configPath); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"reload failed: %s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -863,7 +882,7 @@ func (s *Server) handleReload(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(fmt.Sprintf(`{"status":"reloaded","rules_count":%d,"duration_ms":%d}`,
 		rulesCount, time.Since(start).Milliseconds()))
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 // Version management handlers
@@ -897,13 +916,13 @@ func (s *Server) handleVersions(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleCurrentVersion(ctx *fasthttp.RequestCtx) {
@@ -911,7 +930,7 @@ func (s *Server) handleCurrentVersion(ctx *fasthttp.RequestCtx) {
 	if current == nil {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString(`{"error":"no version available"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -935,13 +954,13 @@ func (s *Server) handleCurrentVersion(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
@@ -949,7 +968,7 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	if !ctx.IsPost() {
 		ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
 		ctx.SetBodyString(`{"error":"method not allowed, use POST"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -960,14 +979,14 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		ctx.SetBodyString(`{"error":"invalid request body, expected {\"version\": N}"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	if req.Version < 1 {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		ctx.SetBodyString(`{"error":"version must be >= 1"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -976,7 +995,7 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	if targetVersion == nil {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"version %d not found"}`, req.Version))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -985,7 +1004,7 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	if rolledBack == nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(`{"error":"rollback failed"}`)
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -994,7 +1013,7 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"failed to create router: %s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
@@ -1020,7 +1039,7 @@ func (s *Server) handleRollback(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(fmt.Sprintf(`{"status":"rolled_back","from_version":%d,"new_version":%d,"rules_count":%d}`,
 		req.Version, rolledBack.Version, rolledBack.RulesCount))
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleAudit(ctx *fasthttp.RequestCtx) {
@@ -1038,13 +1057,13 @@ func (s *Server) handleAudit(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 // Debug endpoint handlers
@@ -1169,13 +1188,13 @@ func (s *Server) handleDebugConfig(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleDebugRules(ctx *fasthttp.RequestCtx) {
@@ -1222,13 +1241,13 @@ func (s *Server) handleDebugRules(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }
 
 func (s *Server) handleDebugRuntime(ctx *fasthttp.RequestCtx) {
@@ -1280,11 +1299,11 @@ func (s *Server) handleDebugRuntime(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf(`{"error":"%s"}`, err.Error()))
-		ctx.SetContentType("application/json")
+		ctx.SetContentType(contentTypeJSON)
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
-	ctx.SetContentType("application/json")
+	ctx.SetContentType(contentTypeJSON)
 }

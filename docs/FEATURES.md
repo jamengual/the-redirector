@@ -14,22 +14,24 @@ This document details the feature requirements and design decisions for The Redi
 │                         CORE (Minimal)                              │
 │  • HTTP redirect handling (any status code)                         │
 │  • Radix tree + regex routing                                       │
+│  • Host allowlist (O(1) early rejection for DDoS mitigation)        │
 │  • Config loading (file-based)                                      │
 │  • Prometheus metrics endpoint                                      │
 │  • Health/ready endpoints                                           │
 └─────────────────────────────────────────────────────────────────────┘
                               │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│ config-syncer │    │  redirector   │    │   redirector  │
-│   (separate)  │    │     -tui      │    │    -lint      │
-│               │    │               │    │               │
-│ • GitHub/VCS  │    │ • Live logs   │    │ • Duplicates  │
-│ • S3/Azure    │    │ • htop-style  │    │ • Conflicts   │
-│ • Failover    │    │ • Stats view  │    │ • Regex perf  │
-│ • Merging     │    │               │    │               │
-└───────────────┘    └───────────────┘    └───────────────┘
+        ┌──────────────────────┼─────────────────────┐
+        ▼                      ▼                     ▼
+┌─────────────────┐    ┌───────────────┐    ┌───────────────┐
+│ redirector-sync │    │  redirector   │    │  (internal)   │
+│   (separate)    │    │     -tui      │    │  lint library │
+│                 │    │               │    │               │
+│ • GitHub/VCS    │    │ • Live logs   │    │ • Duplicates  │
+│ • S3/Azure      │    │ • htop-style  │    │ • Conflicts   │
+│ • Failover      │    │ • Stats view  │    │ • Regex perf  │
+│ • Merging       │    │               │    │ (used by sync)│
+│ • Config Lint   │    │               │    │               │
+└─────────────────┘    └───────────────┘    └───────────────┘
 ```
 
 ---
@@ -388,15 +390,18 @@ Enhanced health check with configuration metadata.
 
 ---
 
-## 8. Duplicate & Conflict Detection (Lint Tool)
+## 8. Duplicate & Conflict Detection (Lint)
 
-Separate CLI tool for config validation.
+Config validation integrated into `redirector-sync`. Lint runs automatically during sync (errors block, warnings log) and is also available as a standalone mode.
 
 ### Usage
 
 ```bash
-# Validate config files
-redirector-lint /etc/redirector/
+# Lint a local config file
+redirector-sync --lint --lint-config /etc/redirector/
+
+# Lint all sources from syncer config (auto-detects multi-source conflicts)
+redirector-sync --lint --config syncer.yaml
 
 # Output
 ✓ Loaded 1,234 rules from 15 files
@@ -433,7 +438,7 @@ SUGGESTIONS:
 ### Implementation
 
 ```go
-// cmd/redirector-lint/main.go
+// internal/lint/lint.go
 type LintResult struct {
     Errors   []LintError
     Warnings []LintWarning
@@ -465,7 +470,7 @@ Support multiple configuration sources with failover and merging.
 ### Configuration
 
 ```yaml
-# config-syncer.yaml
+# syncer.yaml
 sources:
   # Primary source
   - name: github-primary
@@ -540,13 +545,13 @@ failover:
 
 ## 10. GitHubSource Pull Model
 
-Config-syncer pulls to disk, then applies.
+redirector-sync pulls to disk, then applies.
 
 ### Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                           CONFIG-SYNCER                                  │
+│                          REDIRECTOR-SYNC                                 │
 │                                                                          │
 │  1. PULL          2. VALIDATE        3. APPLY          4. NOTIFY         │
 │  ┌─────────┐      ┌─────────┐       ┌─────────┐       ┌─────────┐       │
@@ -564,7 +569,7 @@ Config-syncer pulls to disk, then applies.
 ### Configuration
 
 ```yaml
-# config-syncer.yaml
+# syncer.yaml
 sync:
   # Pull to staging directory first
   staging_dir: /tmp/redirector-staging
@@ -685,6 +690,7 @@ Core packages (well-maintained, widely used):
 │  │                        MINIMAL CORE                                  │   │
 │  │  • fasthttp server                                                   │   │
 │  │  • Radix tree + regex router                                        │   │
+│  │  • Host allowlist (O(1) early rejection for DDoS mitigation)        │   │
 │  │  • YAML config loading (single file or directory)                   │   │
 │  │  • Any HTTP status response                                          │   │
 │  │  • Header injection                                                  │   │
@@ -694,15 +700,16 @@ Core packages (well-maintained, widely used):
 │  └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│  config-syncer   │  │  redirector-tui  │  │  redirector-lint │
-│    (separate)    │  │    (separate)    │  │    (separate)    │
-│                  │  │                  │  │                  │
-│ • GitHub/GitLab  │  │ • htop-style UI  │  │ • Duplicate check│
-│ • S3/Azure/GCP   │  │ • Live requests  │  │ • Conflict detect│
-│ • Pull to disk   │  │ • Stats view     │  │ • Regex analysis │
-│ • Validate       │  │ • Connects via   │  │ • Suggestions    │
-│ • Multi-source   │  │   socket/SSE     │  │                  │
-│ • Failover       │  │                  │  │                  │
-└──────────────────┘  └──────────────────┘  └──────────────────┘
+┌──────────────────┐  ┌──────────────────┐
+│  redirector-sync │  │  redirector-tui  │
+│    (separate)    │  │    (separate)    │
+│                  │  │                  │
+│ • GitHub/GitLab  │  │ • htop-style UI  │
+│ • S3/Azure/GCP   │  │ • Live requests  │
+│ • Pull to disk   │  │ • Stats view     │
+│ • Validate+Lint  │  │ • Connects via   │
+│ • Multi-source   │  │   socket/SSE     │
+│ • Failover       │  │                  │
+│ • Conflict detect│  │                  │
+└──────────────────┘  └──────────────────┘
 ```

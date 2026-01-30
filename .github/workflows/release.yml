@@ -76,7 +76,7 @@ jobs:
           BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # Build all binaries
-          for cmd in redirector redirector-lint redirector-tui config-syncer; do
+          for cmd in redirector redirector-sync redirector-tui; do
             OUTPUT="dist/${cmd}-${GOOS}-${GOARCH}${EXT}"
             CGO_ENABLED=0 go build \
               -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \

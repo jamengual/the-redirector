@@ -4,6 +4,10 @@ package syncer
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -376,6 +380,9 @@ func (s *Syncer) fetchAndMerge(ctx context.Context) (*config.Config, error) {
 		if result.err != nil {
 			contribution.Error = result.err.Error()
 			log.Error().Err(result.err).Str("source", srcCfg.Name).Msg("Failed to fetch from source")
+		} else if result.config == nil {
+			contribution.Error = "source returned nil config without error"
+			log.Error().Str("source", srcCfg.Name).Msg("Source returned nil config without error")
 		} else {
 			configs[result.index] = result.config
 			contribution.RuleCount = len(result.config.Rules)
@@ -650,7 +657,10 @@ func (s *Syncer) doPush(ctx context.Context, target *TargetConfig, cfg *config.C
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Debug().Err(readErr).Str("target", target.Name).Msg("Failed to read push response body")
+	}
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
@@ -774,10 +784,35 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Detect webhook type
 	eventType := ""
+	isGitHub := false
+	isGitLab := false
 	if gh := r.Header.Get("X-GitHub-Event"); gh != "" {
 		eventType = "github:" + gh
+		isGitHub = true
 	} else if gl := r.Header.Get("X-Gitlab-Event"); gl != "" {
 		eventType = "gitlab:" + gl
+		isGitLab = true
+	}
+
+	// Validate webhook signature when a secret is configured
+	if h.secret != "" {
+		if isGitHub {
+			if err := validateGitHubSignature(h.secret, r.Header.Get("X-Hub-Signature-256"), body); err != nil {
+				log.Warn().Err(err).Msg("GitHub webhook signature validation failed")
+				http.Error(w, "Invalid signature", http.StatusForbidden)
+				return
+			}
+		} else if isGitLab {
+			if err := validateGitLabToken(h.secret, r.Header.Get("X-Gitlab-Token")); err != nil {
+				log.Warn().Err(err).Msg("GitLab webhook token validation failed")
+				http.Error(w, "Invalid token", http.StatusForbidden)
+				return
+			}
+		} else {
+			log.Warn().Msg("Webhook received with no recognized event headers")
+			http.Error(w, "Unrecognized webhook source", http.StatusBadRequest)
+			return
+		}
 	}
 
 	log.Info().
@@ -797,6 +832,47 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// validateGitHubSignature verifies the HMAC-SHA256 signature sent by GitHub.
+// The expected header format is "sha256=<hex-encoded HMAC>".
+func validateGitHubSignature(secret, signatureHeader string, body []byte) error {
+	if signatureHeader == "" {
+		return fmt.Errorf("missing X-Hub-Signature-256 header")
+	}
+
+	if !strings.HasPrefix(signatureHeader, "sha256=") {
+		return fmt.Errorf("invalid signature format: missing sha256= prefix")
+	}
+
+	receivedHex := signatureHeader[len("sha256="):]
+	receivedMAC, err := hex.DecodeString(receivedHex)
+	if err != nil {
+		return fmt.Errorf("invalid signature hex encoding: %w", err)
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expectedMAC := mac.Sum(nil)
+
+	if !hmac.Equal(receivedMAC, expectedMAC) {
+		return fmt.Errorf("signature mismatch")
+	}
+
+	return nil
+}
+
+// validateGitLabToken verifies the secret token sent by GitLab.
+func validateGitLabToken(secret, token string) error {
+	if token == "" {
+		return fmt.Errorf("missing X-Gitlab-Token header")
+	}
+
+	if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
+		return fmt.Errorf("token mismatch")
+	}
+
+	return nil
 }
 
 // StartWebhookServer starts the webhook HTTP server.
@@ -839,7 +915,10 @@ func (s *Syncer) PushConfigDirectly(ctx context.Context, target *TargetConfig, c
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			log.Debug().Err(readErr).Msg("Failed to read error response body")
+		}
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
