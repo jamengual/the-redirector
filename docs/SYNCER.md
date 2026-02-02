@@ -222,129 +222,471 @@ Debug logging shows source creation details (with secrets redacted), fetch flow 
 
 ## Available Configuration Sources
 
-| Source | Type | Description |
-|--------|------|-------------|
-| File | `file` | Local filesystem (YAML, JSON) |
-| HTTP/HTTPS | `http` | HTTP endpoint with bearer/basic auth, ETag caching |
-| AWS S3 | `s3` | S3 bucket with IAM/cross-account support |
-| AWS Parameter Store | `parameterstore` | SSM parameters (single or hierarchy) |
-| AWS Secrets Manager | `secretsmanager` | Secrets with rotation support |
-| Azure Blob Storage | `azureblob` | Azure Storage with SAS/DefaultCredential |
-| GCP Cloud Storage | `gcs` | GCS with Application Default Credentials |
-| GitHub | `github` | GitHub repos (PAT or GitHub App auth, release/branch/tag strategies, tag pattern glob matching) |
-| GitLab | `gitlab` | GitLab repos (PAT/OAuth2, releases/branches/tags with pattern matching) |
-| HashiCorp Consul | `consul` | Consul KV with native watch |
-| etcd | `etcd` | etcd KV with native watch |
+| Source | Type | Auth Options | Description |
+|--------|------|--------------|-------------|
+| File | `file` | — | Local filesystem (YAML, JSON) |
+| AWS S3 | `s3` | IAM, cross-account role | S3 bucket with IAM/cross-account support |
+| Azure Blob Storage | `azureblob` | Connection string, account key, SAS, Managed Identity | Azure Storage containers |
+| GCP Cloud Storage | `gcs` | Application Default Credentials, service account | GCS buckets |
+| GitHub | `github` | PAT, GitHub App (JWT) | Repos with release/branch/tag/commit strategies |
+| GitLab | `gitlab` | PAT, OAuth2 | Repos with release/branch/tag/commit strategies |
+| HTTP/HTTPS | `http` | Bearer token, basic auth | Any HTTP endpoint with ETag caching |
+| AWS Parameter Store | `parameterstore` | IAM, cross-account role | SSM parameters (single or hierarchy) |
+| AWS Secrets Manager | `secretsmanager` | IAM, cross-account role | Secrets with rotation and version staging |
+| HashiCorp Consul | `consul` | ACL token, mTLS | Consul KV with blocking queries |
+| etcd | `etcd` | Username/password, mTLS | etcd KV with native watch |
 
-### AWS Parameter Store
+---
 
-```yaml
-sources:
-  - name: aws-params
-    type: parameterstore
-    config:
-      path: /myapp/redirector/config  # Single parameter
-      # Or hierarchy: /myapp/redirector/  (trailing slash)
-      region: us-east-1
-      with_decryption: true  # For SecureString
-      poll_interval: 1m
-```
+### File
 
-### AWS Secrets Manager
+Read config from the local filesystem. Simplest source — good for local development or as a fallback.
 
 ```yaml
 sources:
-  - name: aws-secrets
-    type: secretsmanager
+  - name: local-config
+    type: file
     config:
-      secret_id: myapp/redirector-config
-      region: us-east-1
-      version_stage: AWSCURRENT  # Or AWSPREVIOUS
-      cache_ttl: 5m
+      path: /etc/redirector/config.yaml
 ```
+
+---
+
+### AWS S3
+
+Read config from an S3 bucket. Supports cross-account access via IAM role assumption and S3-compatible endpoints (MinIO, LocalStack).
+
+```yaml
+sources:
+  # Standard S3
+  - name: s3-primary
+    type: s3
+    config:
+      bucket: my-config-bucket
+      key: config/redirector.yaml
+      region: us-east-1
+      poll_interval: 5m
+
+  # Cross-account access
+  - name: s3-cross-account
+    type: s3
+    config:
+      bucket: other-team-bucket
+      key: redirects/rules.yaml
+      region: eu-west-1
+      role_arn: arn:aws:iam::123456789012:role/redirector-reader
+      poll_interval: 5m
+
+  # S3-compatible (MinIO)
+  - name: minio
+    type: s3
+    config:
+      bucket: configs
+      key: redirector.yaml
+      region: us-east-1
+      endpoint: http://minio.internal:9000
+```
+
+---
 
 ### Azure Blob Storage
 
+Read config from Azure Blob Storage. Four authentication methods available.
+
 ```yaml
 sources:
-  - name: azure-blob
+  # Connection string auth
+  - name: azure-connstr
     type: azureblob
     config:
       storage_account: mystorageaccount
       container: configs
       blob_name: redirector.yaml
-      # Auth options (pick one):
       connection_string: ${AZURE_STORAGE_CONNECTION_STRING}
-      # Or: account_key, sas_token, use_default_credential
+      poll_interval: 5m
+
+  # Account key auth
+  - name: azure-key
+    type: azureblob
+    config:
+      storage_account: mystorageaccount
+      container: configs
+      blob_name: redirector.yaml
+      account_key: ${AZURE_STORAGE_KEY}
+
+  # SAS token auth
+  - name: azure-sas
+    type: azureblob
+    config:
+      storage_account: mystorageaccount
+      container: configs
+      blob_name: redirector.yaml
+      sas_token: ${AZURE_SAS_TOKEN}
+
+  # Managed Identity (Azure VMs, AKS, App Service)
+  - name: azure-managed
+    type: azureblob
+    config:
+      storage_account: mystorageaccount
+      container: configs
+      blob_name: redirector.yaml
+      use_default_credential: true
 ```
+
+---
 
 ### GCP Cloud Storage
 
+Read config from a GCS bucket. Uses Application Default Credentials by default.
+
 ```yaml
 sources:
-  - name: gcs
+  # Application Default Credentials (GKE, Cloud Run, etc.)
+  - name: gcs-default
     type: gcs
     config:
       bucket: my-config-bucket
       object: redirector/config.yaml
-      # Auth: Uses Application Default Credentials by default
-      # Or: credentials_file: /path/to/service-account.json
+      project: my-gcp-project
+      poll_interval: 5m
+
+  # Service account key file
+  - name: gcs-sa
+    type: gcs
+    config:
+      bucket: my-config-bucket
+      object: redirector/config.yaml
+      credentials_file: /etc/redirector/gcp-sa.json
+
+  # Inline credentials (use env var for the JSON)
+  - name: gcs-inline
+    type: gcs
+    config:
+      bucket: my-config-bucket
+      object: redirector/config.yaml
+      credentials_json: ${GCP_CREDENTIALS_JSON}
+
+  # Storage emulator (dev/test)
+  - name: gcs-emulator
+    type: gcs
+    config:
+      bucket: test-bucket
+      object: config.yaml
+      endpoint: http://localhost:4443
 ```
 
-### HTTP/HTTPS Endpoint
+The GCS provider also respects the `STORAGE_EMULATOR_HOST` environment variable.
+
+---
+
+### GitHub
+
+Read config from a GitHub repository. Supports PAT and GitHub App authentication, with four deployment strategies.
 
 ```yaml
 sources:
-  - name: http-config
+  # PAT auth, release strategy (default)
+  - name: github-releases
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      token: ${GITHUB_TOKEN}
+      strategy: release           # Deploy from GitHub Releases
+      environment: production
+
+  # PAT auth, branch strategy
+  - name: github-branch
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      token: ${GITHUB_TOKEN}
+      strategy: branch
+      environment: main           # Track the 'main' branch
+
+  # PAT auth, tag strategy with pattern
+  - name: github-tags
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      token: ${GITHUB_TOKEN}
+      strategy: tag
+      tag_pattern: "v*"           # Only tags matching v*
+
+  # GitHub App auth (recommended for orgs)
+  - name: github-app
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      strategy: release
+      app:
+        app_id: 12345
+        installation_id: 67890
+        private_key_path: /etc/redirector/github-app.pem
+        # Or inline: private_key: ${GITHUB_APP_PRIVATE_KEY}
+
+  # GitHub Enterprise Server
+  - name: github-enterprise
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      token: ${GITHUB_TOKEN}
+      base_url: https://github.corp.example.com/api/v3
+      strategy: branch
+      environment: main
+
+  # Webhook-triggered sync (instant updates on push)
+  - name: github-webhook
+    type: github
+    config:
+      repository: myorg/redirector-config
+      path: config/rules.yaml
+      token: ${GITHUB_TOKEN}
+      strategy: branch
+      environment: main
+      webhook_secret: ${GITHUB_WEBHOOK_SECRET}
+```
+
+**Deployment strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `release` | Only deploy from published GitHub Releases (default, safest) |
+| `tag` | Deploy from git tags matching `tag_pattern` glob |
+| `branch` | Track a branch (set via `environment`) |
+| `commit` | Pin to a specific commit SHA |
+
+See [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) for detailed GitHub App setup.
+
+---
+
+### GitLab
+
+Read config from a GitLab repository. Supports PAT and OAuth2 authentication.
+
+```yaml
+sources:
+  # PAT auth, release strategy
+  - name: gitlab-releases
+    type: gitlab
+    config:
+      project: mygroup/redirector-config
+      path: config/rules.yaml
+      token: ${GITLAB_TOKEN}
+      token_type: private-token   # default
+      strategy: release
+      environment: production
+
+  # OAuth2 auth with auto token refresh
+  - name: gitlab-oauth
+    type: gitlab
+    config:
+      project: mygroup/redirector-config
+      path: config/rules.yaml
+      token: ${GITLAB_OAUTH_TOKEN}
+      token_type: oauth
+      strategy: branch
+      environment: main
+
+  # Tag strategy with pattern matching
+  - name: gitlab-tags
+    type: gitlab
+    config:
+      project: mygroup/redirector-config
+      path: config/rules.yaml
+      token: ${GITLAB_TOKEN}
+      strategy: tag
+      tag_pattern: "release-*"
+
+  # Self-hosted GitLab
+  - name: gitlab-self-hosted
+    type: gitlab
+    config:
+      project: mygroup/redirector-config
+      path: config/rules.yaml
+      base_url: https://gitlab.corp.example.com
+      token: ${GITLAB_TOKEN}
+      strategy: release
+
+  # Webhook-triggered sync
+  - name: gitlab-webhook
+    type: gitlab
+    config:
+      project: mygroup/redirector-config
+      path: config/rules.yaml
+      token: ${GITLAB_TOKEN}
+      strategy: branch
+      environment: main
+      webhook_token: ${GITLAB_WEBHOOK_TOKEN}
+```
+
+---
+
+### HTTP/HTTPS Endpoint
+
+Read config from any HTTP endpoint. Supports bearer token and basic auth. Automatically uses ETag-based caching — if the server returns an `ETag` header, subsequent requests include `If-None-Match` to avoid re-downloading unchanged configurations.
+
+```yaml
+sources:
+  # Bearer token auth
+  - name: http-bearer
     type: http
     config:
       url: https://config-server.internal/redirector/config.yaml
       bearer_token: ${CONFIG_SERVER_TOKEN}
-      # Or basic auth:
-      # basic_auth:
-      #   username: admin
-      #   password: ${CONFIG_PASSWORD}
       timeout: 10s
       poll_interval: 30s
       headers:
         X-Custom-Header: "my-value"
-```
+        Accept: "application/yaml"
 
-The HTTP provider supports ETag-based caching. If the server returns an `ETag` header, subsequent requests include `If-None-Match` to avoid re-downloading unchanged configurations.
-
-### GitLab
-
-```yaml
-sources:
-  - name: gitlab-config
-    type: gitlab
+  # Basic auth
+  - name: http-basic
+    type: http
     config:
-      project: mygroup/myproject
-      path: config/redirector.yaml
-      base_url: https://gitlab.com  # Or self-hosted
-      strategy: release  # release, branch, tag, commit
-      environment: production
-      token: ${GITLAB_TOKEN}
+      url: https://config-server.internal/redirector/config.yaml
+      basic_auth:
+        username: admin
+        password: ${CONFIG_PASSWORD}
+      timeout: 10s
+      poll_interval: 1m
+
+  # No auth (internal network)
+  - name: http-internal
+    type: http
+    config:
+      url: http://config-service.internal:8080/redirector.yaml
+      timeout: 5s
+      poll_interval: 30s
 ```
 
-### Consul
+---
+
+### AWS Parameter Store
+
+Read config from AWS Systems Manager Parameter Store. Supports single parameters and hierarchies, with optional decryption for SecureString parameters.
 
 ```yaml
 sources:
-  - name: consul-kv
+  # Single parameter
+  - name: ssm-single
+    type: parameterstore
+    config:
+      path: /myapp/redirector/config
+      region: us-east-1
+      with_decryption: true       # Decrypt SecureString (default: true)
+      poll_interval: 1m
+
+  # Parameter hierarchy (trailing slash)
+  - name: ssm-hierarchy
+    type: parameterstore
+    config:
+      path: /myapp/redirector/    # Trailing slash = fetch all children
+      region: us-east-1
+      recursive: true             # Include nested paths
+      with_decryption: true
+      poll_interval: 1m
+
+  # Cross-account access
+  - name: ssm-cross-account
+    type: parameterstore
+    config:
+      path: /shared/redirector/config
+      region: us-east-1
+      role_arn: arn:aws:iam::123456789012:role/ssm-reader
+```
+
+---
+
+### AWS Secrets Manager
+
+Read config from AWS Secrets Manager. Supports version staging and caching for rotation-aware deployments.
+
+```yaml
+sources:
+  # Current version (default)
+  - name: secrets-current
+    type: secretsmanager
+    config:
+      secret_id: myapp/redirector-config
+      region: us-east-1
+      version_stage: AWSCURRENT   # Or AWSPREVIOUS for rollback
+      cache_ttl: 5m               # Cache to reduce API calls
+      poll_interval: 5m
+
+  # Specific version (pinned deployment)
+  - name: secrets-pinned
+    type: secretsmanager
+    config:
+      secret_id: myapp/redirector-config
+      region: us-east-1
+      version_id: "abc123-def456"
+
+  # Cross-account access
+  - name: secrets-cross-account
+    type: secretsmanager
+    config:
+      secret_id: arn:aws:secretsmanager:us-east-1:123456789012:secret:redirector-config
+      region: us-east-1
+      role_arn: arn:aws:iam::123456789012:role/secrets-reader
+```
+
+---
+
+### HashiCorp Consul
+
+Read config from Consul KV. Uses blocking queries for near-instant change detection without polling.
+
+```yaml
+sources:
+  # Basic setup
+  - name: consul-basic
     type: consul
     config:
       key: redirector/config
       address: consul.service.consul:8500
       datacenter: dc1
-      token: ${CONSUL_TOKEN}  # ACL token (optional)
+      token: ${CONSUL_TOKEN}      # ACL token
+      wait_time: 5m               # Blocking query timeout
+
+  # Consul Enterprise (namespace + partition)
+  - name: consul-enterprise
+    type: consul
+    config:
+      key: redirector/config
+      address: consul.corp.example.com:8500
+      datacenter: us-east-1
+      token: ${CONSUL_TOKEN}
+      namespace: production
+      partition: platform
+
+  # mTLS authentication
+  - name: consul-mtls
+    type: consul
+    config:
+      key: redirector/config
+      address: consul.service.consul:8501
+      token: ${CONSUL_TOKEN}
+      tls:
+        ca_file: /etc/ssl/consul/ca.pem
+        cert_file: /etc/ssl/consul/client-cert.pem
+        key_file: /etc/ssl/consul/client-key.pem
 ```
+
+---
 
 ### etcd
 
+Read config from etcd KV. Uses native watch for real-time change detection.
+
 ```yaml
 sources:
-  - name: etcd-kv
+  # Basic setup
+  - name: etcd-basic
     type: etcd
     config:
       key: /redirector/config
@@ -354,6 +696,30 @@ sources:
         - etcd3:2379
       username: root
       password: ${ETCD_PASSWORD}
+      dial_timeout: 5s
+      request_timeout: 10s
+
+  # Single node (dev/test)
+  - name: etcd-dev
+    type: etcd
+    config:
+      key: /redirector/config
+      endpoints:
+        - localhost:2379
+
+  # mTLS authentication
+  - name: etcd-mtls
+    type: etcd
+    config:
+      key: /redirector/config
+      endpoints:
+        - etcd1.corp.example.com:2379
+        - etcd2.corp.example.com:2379
+        - etcd3.corp.example.com:2379
+      tls:
+        cert_file: /etc/ssl/etcd/client-cert.pem
+        key_file: /etc/ssl/etcd/client-key.pem
+        ca_file: /etc/ssl/etcd/ca.pem
 ```
 
 ---
