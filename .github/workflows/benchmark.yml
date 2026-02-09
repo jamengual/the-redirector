@@ -44,8 +44,8 @@ on:
       - 'test/load/**'
 
   # Weekly scheduled benchmark for tracking regressions
-  schedule:
-    - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
+  # schedule:
+  #   - cron: '0 6 * * 1' # Every Monday at 6 AM UTC
 
 permissions:
   contents: read
