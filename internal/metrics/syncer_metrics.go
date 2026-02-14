@@ -13,7 +13,7 @@ type SyncerMetrics struct {
 	// Sync lifecycle
 	SyncTotal         *prometheus.CounterVec
 	SyncDuration      *prometheus.HistogramVec
-	LastSyncTimestamp  prometheus.Gauge
+	LastSyncTimestamp prometheus.Gauge
 	LastSyncSuccess   prometheus.Gauge
 
 	// Source fetch metrics

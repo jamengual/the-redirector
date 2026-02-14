@@ -40,7 +40,7 @@ type Metrics struct {
 	MemoryAlloc prometheus.GaugeFunc
 
 	// Build & uptime metrics
-	Info         prometheus.Gauge
+	Info          prometheus.Gauge
 	UptimeSeconds prometheus.GaugeFunc
 
 	// Rule metrics
