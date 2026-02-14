@@ -150,7 +150,7 @@ func runServer() {
 		Msg("Configuration loaded")
 
 	// Create and start server
-	srv, err := server.New(cfg, *configPath)
+	srv, err := server.New(cfg, *configPath, server.WithBuildInfo(version, "", buildTime))
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create server")
 	}

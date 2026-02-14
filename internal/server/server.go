@@ -58,6 +58,7 @@ type Server struct {
 	auditLog        *versioning.AuditLog
 	tracingProvider *tracing.Provider
 	rateLimiter     *ratelimit.Limiter
+	buildInfo       metrics.BuildInfo
 
 	httpServer       *fasthttp.Server
 	managementServer *fasthttp.Server
@@ -66,9 +67,23 @@ type Server struct {
 	mu          sync.RWMutex
 }
 
+// Option configures optional server parameters.
+type Option func(*Server)
+
+// WithBuildInfo sets version metadata for the build_info Prometheus metric.
+func WithBuildInfo(version, commit, buildTime string) Option {
+	return func(s *Server) {
+		s.buildInfo = metrics.BuildInfo{
+			Version:   version,
+			Commit:    commit,
+			BuildTime: buildTime,
+		}
+	}
+}
+
 // New creates a new server instance.
 // configPath is stored for reload operations.
-func New(cfg *config.Config, configPath string) (*Server, error) {
+func New(cfg *config.Config, configPath string, opts ...Option) (*Server, error) {
 	r, err := router.New(cfg.Rules)
 	if err != nil {
 		return nil, fmt.Errorf("creating router: %w", err)
@@ -172,6 +187,9 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 			})
 		}
 		rateLimiter = ratelimit.New(rateLimitCfg)
+		rateLimiter.SetOnLimited(func(scope string) {
+			m.RecordRateLimited(scope)
+		})
 		log.Info().
 			Float64("global_rps", rateLimitCfg.GlobalRPS).
 			Float64("per_ip_rps", rateLimitCfg.PerIPRPS).
@@ -221,10 +239,21 @@ func New(cfg *config.Config, configPath string) (*Server, error) {
 		promHandler:     promHandler,
 	}
 
+	// Apply options
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Register build info metric
+	m.RegisterBuildInfo(registry, s.buildInfo)
+
 	// Record initial config version
 	initialVersion := versionStore.Add(cfg, configPath)
 	auditLog.LogConfigChange(versioning.AuditEventConfigLoaded, initialVersion, "system", "startup")
 	log.Info().Int("version", initialVersion.Version).Str("hash", initialVersion.Hash).Msg("Initial config version recorded")
+
+	// Set initial config info metric
+	m.SetConfigInfo(cfg.Version, initialVersion.Hash, configPath)
 
 	// Configure main HTTP server handler with optional rate limiting
 	redirectHandler := s.handleRedirect
@@ -712,6 +741,7 @@ func (s *Server) ReloadConfig(path string) error {
 	// Record successful reload
 	if s.metrics != nil {
 		s.metrics.RecordConfigReload(true, len(cfg.Rules), time.Since(start).Seconds())
+		s.metrics.SetConfigInfo(cfg.Version, version.Hash, path)
 	}
 
 	// Record in tracing span
