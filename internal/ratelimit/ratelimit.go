@@ -67,6 +67,10 @@ type ipLimiter struct {
 	lastAccess time.Time
 }
 
+// OnLimitedFunc is called when a request is rate-limited, with the scope
+// that triggered the limit (e.g. "global", "per_ip", "path").
+type OnLimitedFunc func(scope string)
+
 // Limiter provides rate limiting functionality.
 type Limiter struct {
 	cfg           *Config
@@ -74,6 +78,7 @@ type Limiter struct {
 	ipLimiters    map[string]*ipLimiter
 	pathLimiters  map[string]*rate.Limiter
 	exemptNets    []*net.IPNet
+	onLimited     OnLimitedFunc
 	mu            sync.RWMutex
 	stopCleanup   chan struct{}
 }
@@ -158,6 +163,11 @@ func (l *Limiter) cleanup() {
 	}
 }
 
+// SetOnLimited registers a callback invoked when a request is rate-limited.
+func (l *Limiter) SetOnLimited(fn OnLimitedFunc) {
+	l.onLimited = fn
+}
+
 // Allow checks if a request should be allowed.
 func (l *Limiter) Allow(ctx *fasthttp.RequestCtx) bool {
 	if !l.cfg.Enabled {
@@ -174,6 +184,9 @@ func (l *Limiter) Allow(ctx *fasthttp.RequestCtx) bool {
 	// Check global limit
 	if l.globalLimiter != nil && !l.globalLimiter.Allow() {
 		log.Debug().Msg("Global rate limit exceeded")
+		if l.onLimited != nil {
+			l.onLimited("global")
+		}
 		return false
 	}
 
@@ -182,6 +195,9 @@ func (l *Limiter) Allow(ctx *fasthttp.RequestCtx) bool {
 	if pathLimiter := l.getPathLimiter(path); pathLimiter != nil {
 		if !pathLimiter.Allow() {
 			log.Debug().Str("path", path).Msg("Path rate limit exceeded")
+			if l.onLimited != nil {
+				l.onLimited("path")
+			}
 			return false
 		}
 	}
@@ -191,6 +207,9 @@ func (l *Limiter) Allow(ctx *fasthttp.RequestCtx) bool {
 		ipLimiter := l.getIPLimiter(clientIP.String())
 		if !ipLimiter.Allow() {
 			log.Debug().Str("ip", clientIP.String()).Msg("IP rate limit exceeded")
+			if l.onLimited != nil {
+				l.onLimited("per_ip")
+			}
 			return false
 		}
 	}

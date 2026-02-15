@@ -15,12 +15,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 
 	"github.com/jamengual/the-redirector/internal/config"
 	"github.com/jamengual/the-redirector/internal/lint"
+	"github.com/jamengual/the-redirector/internal/metrics"
 	"github.com/jamengual/the-redirector/internal/providers"
 )
 
@@ -326,6 +329,13 @@ func startWebhookServer(ctx context.Context, port int, secret string, syncer *Sy
 		json.NewEncoder(w).Encode(status)
 	})
 
+	// Prometheus metrics endpoint
+	if syncer.promRegistry != nil {
+		mux.Handle("/metrics", promhttp.HandlerFor(syncer.promRegistry, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+		}))
+	}
+
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
@@ -382,8 +392,10 @@ func loadSyncerConfig(path string) (*SyncerConfig, error) {
 
 // Syncer handles config synchronization.
 type Syncer struct {
-	cfg     *SyncerConfig
-	sources []ConfigSource
+	cfg          *SyncerConfig
+	sources      []ConfigSource
+	metrics      *metrics.SyncerMetrics
+	promRegistry *prometheus.Registry
 
 	mu           sync.RWMutex
 	syncCount    int64
@@ -438,7 +450,10 @@ type ConfigSource interface {
 
 // NewSyncer creates a new syncer from configuration.
 func NewSyncer(cfg *SyncerConfig) *Syncer {
-	s := &Syncer{cfg: cfg}
+	registry := prometheus.NewRegistry()
+	syncerMetrics := metrics.NewSyncerMetrics(registry)
+
+	s := &Syncer{cfg: cfg, metrics: syncerMetrics, promRegistry: registry}
 
 	// Initialize sources
 	for _, srcCfg := range cfg.Sources {
@@ -653,16 +668,28 @@ func sourceConfigToMap(cfg SourceConfig) map[string]interface{} {
 
 // SyncOnce performs a single sync operation.
 func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
+	syncStart := time.Now()
+
 	// Try sources in priority order
 	var lastErr error
 	for _, src := range s.sources {
 		log.Info().Str("source", src.Name()).Msg("Attempting to fetch config")
 
+		fetchStart := time.Now()
 		data, err := src.Fetch(ctx)
+		fetchDuration := time.Since(fetchStart).Seconds()
+
 		if err != nil {
 			log.Warn().Err(err).Str("source", src.Name()).Msg("Failed to fetch from source")
+			if s.metrics != nil {
+				s.metrics.RecordFetch(src.Name(), false, fetchDuration)
+			}
 			lastErr = err
 			continue
+		}
+
+		if s.metrics != nil {
+			s.metrics.RecordFetch(src.Name(), true, fetchDuration)
 		}
 
 		log.Info().
@@ -678,12 +705,20 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 			continue
 		}
 
+		if s.metrics != nil {
+			s.metrics.RulesFetched.Set(float64(len(parsedCfg.Rules)))
+		}
+
 		linter := lint.New(parsedCfg)
 		lintResult := linter.Lint()
 
 		if lintResult.HasErrors() {
 			for _, issue := range lintResult.Errors() {
 				log.Error().Str("rule_id", issue.RuleID).Str("source", src.Name()).Msg(issue.Message)
+			}
+			if s.metrics != nil {
+				s.metrics.RecordLintError(src.Name())
+				s.metrics.RecordSync(false, time.Since(syncStart).Seconds())
 			}
 			s.mu.Lock()
 			s.syncErrors++
@@ -697,11 +732,17 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 
 		if dryRun {
 			log.Info().Msg("Dry run - not writing output")
+			if s.metrics != nil {
+				s.metrics.RecordSync(true, time.Since(syncStart).Seconds())
+			}
 			return nil
 		}
 
 		// Write output
 		if err := s.writeOutput(ctx, data); err != nil {
+			if s.metrics != nil {
+				s.metrics.RecordSync(false, time.Since(syncStart).Seconds())
+			}
 			s.mu.Lock()
 			s.syncErrors++
 			s.mu.Unlock()
@@ -713,7 +754,14 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 		s.lastSyncTime = time.Now()
 		s.mu.Unlock()
 
+		if s.metrics != nil {
+			s.metrics.RecordSync(true, time.Since(syncStart).Seconds())
+		}
 		return nil
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordSync(false, time.Since(syncStart).Seconds())
 	}
 
 	s.mu.Lock()
@@ -861,6 +909,7 @@ func (s *Syncer) pushToTargetWithRetry(ctx context.Context, target *TargetConfig
 		delay = 1 * time.Second
 	}
 
+	pushStart := time.Now()
 	var lastErr error
 	for attempt := 0; attempt <= attempts; attempt++ {
 		if attempt > 0 {
@@ -881,12 +930,18 @@ func (s *Syncer) pushToTargetWithRetry(ctx context.Context, target *TargetConfig
 
 		err := s.doPush(ctx, target, data)
 		if err == nil {
+			if s.metrics != nil {
+				s.metrics.RecordPush(target.Name, true, time.Since(pushStart).Seconds())
+			}
 			return nil
 		}
 		lastErr = err
 		log.Warn().Err(err).Str("target", target.Name).Int("attempt", attempt).Msg("Push attempt failed")
 	}
 
+	if s.metrics != nil {
+		s.metrics.RecordPush(target.Name, false, time.Since(pushStart).Seconds())
+	}
 	return lastErr
 }
 

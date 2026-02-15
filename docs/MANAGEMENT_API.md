@@ -84,10 +84,33 @@ The `/metrics` endpoint exposes Prometheus-format metrics:
 | `redirector_config_rules_count` | Gauge | — | Current rule count |
 | `redirector_config_last_reload_timestamp_seconds` | Gauge | — | Last reload timestamp |
 | `redirector_config_load_duration_seconds` | Histogram | — | Config load time |
+| `redirector_config_info` | Gauge | version, hash, source | Current config metadata |
 | `redirector_rule_matches_total` | Counter | rule_id, match_type | Rule match count |
 | `redirector_host_rejected_total` | Counter | — | Rejected unknown host requests |
+| `redirector_rate_limited_total` | Counter | scope | Requests rejected by rate limiting |
+| `redirector_build_info` | Gauge | version, commit, build_time, go_version | Build metadata |
+| `redirector_uptime_seconds` | Gauge | — | Time since server started |
 | `redirector_goroutines` | Gauge | — | Current goroutine count |
 | `redirector_memory_alloc_bytes` | Gauge | — | Current memory allocation |
+| `go_*` | Various | — | Standard Go runtime metrics |
+| `process_*` | Various | — | Standard process metrics (CPU, FDs, memory) |
+
+### redirector-sync Metrics
+
+The syncer exposes metrics at `/metrics` on its webhook server port:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `redirector_sync_sync_total` | Counter | status | Total sync operations |
+| `redirector_sync_sync_duration_seconds` | Histogram | status | Sync operation duration |
+| `redirector_sync_last_sync_timestamp_seconds` | Gauge | — | Last sync attempt timestamp |
+| `redirector_sync_last_sync_success` | Gauge | — | Whether last sync succeeded (1/0) |
+| `redirector_sync_fetch_total` | Counter | source, status | Source fetch operations |
+| `redirector_sync_fetch_duration_seconds` | Histogram | source | Source fetch duration |
+| `redirector_sync_push_total` | Counter | target, status | Config push operations |
+| `redirector_sync_push_duration_seconds` | Histogram | target | Config push duration |
+| `redirector_sync_rules_fetched` | Gauge | — | Rules from last successful fetch |
+| `redirector_sync_lint_errors_total` | Counter | source | Lint errors during sync |
 
 ---
 

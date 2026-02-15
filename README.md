@@ -11,6 +11,20 @@ The Redirector handles URL redirects and custom responses at massive scale with 
 
 Built by a DevOps/Platform Engineer with an emphasis on **decentralized configuration ownership**. Teams that own redirects can manage their own rules — via GitHub repos, S3 buckets, or any supported source — without depending on a DevOps or Platform Engineering team to make changes on their behalf. The syncer merges multiple team configs with conflict detection and priority-based resolution. For organizations that prefer centralized management, the same architecture works with a single config source.
 
+### Use Cases
+
+**Domain & URL migrations** — Redirect entire domains or URL structures during rebrands, acquisitions, or site reorganizations. Exact, prefix, regex, and glob matching let you handle everything from simple page moves to complex path transformations with capture groups.
+
+**SEO preservation** — Maintain search engine rankings by issuing proper 301/308 redirects when content moves. Per-rule status codes mean you can return 410 Gone for permanently removed content or 404 for paths you want to disappear from crawlers.
+
+**Vanity URLs & short links** — Serve `/go/slack`, `/go/wiki`, or marketing campaign URLs that redirect to internal or external destinations. Teams manage their own redirect rules via GitHub repos, S3 buckets, or any supported source — no tickets to a platform team required.
+
+**Legacy API deprecation** — Redirect old API versions to new ones with path rewriting and capture groups (`/api/v1/users/123` -> `/api/v2/users/123`). Return 503 with `Retry-After` headers during maintenance windows.
+
+**Bot & abuse mitigation** — Return 404 or 403 for known bot paths (`/wp-admin`, `/.env`) and use the host allowlist to reject traffic for unknown domains at O(1) cost before any rule evaluation, providing built-in DDoS protection.
+
+**Multi-team configuration at scale** — Each team owns their redirect rules in their own repo or config source. The `redirector-sync` service merges configs from GitHub, GitLab, S3, Azure Blob, GCS, Consul, etcd, and more — with conflict detection, linting, and priority-based resolution.
+
 ### Key Features
 
 - **Blazing Fast**: Built on fasthttp with radix tree routing for < 1ms p99 latency
@@ -169,6 +183,73 @@ curl -X POST http://localhost:8081/api/v1/reload  # Trigger reload
 ```
 
 For all endpoints, Prometheus metrics, and authentication details, see **[docs/MANAGEMENT_API.md](docs/MANAGEMENT_API.md)**.
+
+### Prometheus Metrics
+
+Both the redirector and redirector-sync expose a `/metrics` endpoint in Prometheus text format.
+
+**Scrape the redirector:**
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: redirector
+    static_configs:
+      - targets: ['localhost:8081']
+
+  - job_name: redirector-sync
+    static_configs:
+      - targets: ['localhost:9090']  # webhook server port
+```
+
+**Verify locally:**
+
+```bash
+# Redirector metrics
+curl -s http://localhost:8081/metrics | head -20
+
+# Key metrics to watch:
+#   redirector_requests_total           - request volume by status/rule
+#   redirector_request_duration_seconds - latency histogram (p50/p99)
+#   redirector_requests_in_flight       - current concurrency
+#   redirector_config_rules_count       - loaded rules
+#   redirector_rate_limited_total       - rate-limited requests by scope
+#   redirector_host_rejected_total      - DDoS-rejected requests
+#   redirector_build_info              - version/commit for deploy tracking
+#   redirector_uptime_seconds          - process uptime
+#   redirector_config_info             - current config version/hash
+#   process_*  / go_*                  - standard Go runtime metrics
+```
+
+**Syncer metrics** (available when webhook server is enabled):
+
+```bash
+curl -s http://localhost:9090/metrics | head -20
+
+# Key metrics:
+#   redirector_sync_sync_total              - sync success/failure count
+#   redirector_sync_last_sync_success       - 1 if last sync OK, 0 if failed
+#   redirector_sync_fetch_duration_seconds  - source fetch latency
+#   redirector_sync_push_total              - push success/failure per target
+#   redirector_sync_lint_errors_total       - config validation failures
+```
+
+**Example Grafana alert** (PromQL):
+
+```promql
+# Alert if no successful sync in 10 minutes
+time() - redirector_sync_last_sync_timestamp_seconds > 600
+  and redirector_sync_last_sync_success == 0
+
+# Alert on high error rate
+rate(redirector_requests_total{status="5xx"}[5m])
+  / rate(redirector_requests_total[5m]) > 0.01
+
+# Alert on rate limiting
+rate(redirector_rate_limited_total[5m]) > 0
+```
+
+For the full metrics reference, see **[docs/MANAGEMENT_API.md](docs/MANAGEMENT_API.md)**.
 
 ---
 
