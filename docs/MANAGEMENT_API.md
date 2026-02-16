@@ -112,6 +112,36 @@ The syncer exposes metrics at `/metrics` on its webhook server port:
 | `redirector_sync_rules_fetched` | Gauge | — | Rules from last successful fetch |
 | `redirector_sync_lint_errors_total` | Counter | source | Lint errors during sync |
 
+### Webhook Response (redirector-sync)
+
+When the syncer receives a webhook and triggers a sync, the response includes actionable details:
+
+**Success:**
+```json
+{"status": "ok"}
+```
+
+**Lint failure (HTTP 422):**
+```json
+{
+  "status": "lint_failed",
+  "source": "github-primary",
+  "message": "lint errors found in config from source github-primary (2 errors)",
+  "issues": [
+    {
+      "severity": "error",
+      "rule_id": "rule-a",
+      "message": "Circular redirect detected: rule-a -> rule-b -> rule-a",
+      "suggestion": "Remove one rule from the chain or change a destination to break the cycle"
+    }
+  ]
+}
+```
+
+**Other failure (HTTP 500):** Plain text `"Sync failed"`.
+
+Use the `issues` array in CI pipelines to provide specific feedback when config changes introduce problems like circular redirects, duplicate IDs, or overlapping patterns.
+
 ---
 
 ## Authentication

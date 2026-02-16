@@ -129,6 +129,7 @@ Validate configuration and detect issues before deployment. Lint is integrated i
 ```
 
 **Checks performed:**
+- **Circular redirect detection** — cycles, self-loops, and regex/glob sample tracing
 - Duplicate rule IDs
 - Overlapping patterns (rules that match same paths)
 - Greedy patterns without negative priority
@@ -139,22 +140,24 @@ Validate configuration and detect issues before deployment. Lint is integrated i
 Example output:
 ```
 The Redirector - Config Linter
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Loaded 25 rules
 
-✗ ERRORS (1)
-─────────────────────────────────
+✗ ERRORS (2)
+─────────────────────────────────────────────────────────────────
   [rule-5] Duplicate rule ID 'homepage' (first seen at index 0)
+  [rule-a] Circular redirect detected: rule-a -> rule-b -> rule-a
+    → Remove one rule from the chain or change a destination to break the cycle
 
 ⚠ WARNINGS (2)
-─────────────────────────────────
+─────────────────────────────────────────────────────────────────
   [api-v1] Rule 'api-v1' may overlap with 'api-all': Prefix '/api/' is contained in '/api/v1/'
     → Consider setting different priorities to control matching order
   [catch-all] Greedy glob pattern '/**' will match many paths
     → Set a negative priority (e.g., -100) to ensure it's evaluated last
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Found: 1 errors, 2 warnings, 0 suggestions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Found: 2 errors, 2 warnings, 0 suggestions
 ```
 
 ### Multi-Team Conflict Detection
@@ -199,6 +202,209 @@ Found: 2 conflicts, 0 errors, 1 warnings
 Recommendation: Teams should coordinate on conflicting paths or use
 different path prefixes to avoid runtime conflicts.
 ```
+
+### Circular Redirect Detection
+
+The linter detects redirect loops that would cause infinite request cycles. This is one of the most common issues with large redirect rule sets, especially on content sites where teams independently manage rules.
+
+#### How It Works
+
+The linter builds a **directed graph** from all redirect rules and runs **depth-first search (DFS)** cycle detection:
+
+```
+ ┌──────────┐     ┌──────────┐     ┌──────────┐
+ │  rule-a   │────▶│  rule-b   │────▶│  rule-c   │
+ │  /page-a  │     │  /page-b  │     │  /page-c  │
+ │  → /page-b│     │  → /page-c│     │  → /page-a│ ◀── cycle!
+ └──────────┘     └──────────┘     └──────────┘
+       ▲                                  │
+       └──────────────────────────────────┘
+```
+
+Each rule is an edge: from the path it matches to the path it redirects to. When the graph has a cycle, the linter traces the full chain and reports it as an error.
+
+#### What It Detects
+
+| Type | Severity | Example | Description |
+|------|----------|---------|-------------|
+| **Direct cycle** | Error | `/a → /b → /a` | Two rules redirecting to each other |
+| **Transitive cycle** | Error | `/a → /b → /c → /a` | Chain of 3+ rules forming a loop |
+| **Prefix cross-cycle** | Error | `/foo/ → /bar/`, `/bar/ → /foo/` | Prefix rules bouncing between each other |
+| **Cross-host cycle** | Error | `example.com/p1 → example.com/p2 → example.com/p1` | Cycle via absolute URLs pointing back to local hosts |
+| **Prefix self-loop** | Error | `/old/ → /old/new/` with `preserve_path` | A prefix rule that redirects back into its own match space, causing expanding paths: `/old/x → /old/new/x → /old/new/new/x → ...` |
+| **Regex self-match** | Warning | `^/api/v1/(.*) → /api/v1/v2/$1` | Regex destination still matches the same rule (best-effort, sample-based) |
+| **Glob loop** | Warning | `/docs/* → /docs/archive/sample` | Glob destination falls within the same glob match pattern (best-effort) |
+
+#### Example: Direct Cycle
+
+Config with a circular redirect:
+```yaml
+rules:
+  - id: old-home
+    match:
+      type: exact
+      path: /old-home
+    redirect:
+      to: /new-home
+      status: 301
+
+  - id: new-home
+    match:
+      type: exact
+      path: /new-home
+    redirect:
+      to: /old-home    # Oops — this creates a loop!
+      status: 301
+```
+
+Lint output:
+```
+The Redirector - Config Linter
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Loaded 2 rules
+
+✗ ERRORS (1)
+─────────────────────────────────────────────────────────────────
+  [old-home] Circular redirect detected: old-home -> new-home -> old-home
+    → Remove one rule from the chain or change a destination to break the cycle
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Found: 1 errors, 0 warnings, 0 suggestions
+```
+
+#### Example: Prefix Self-Loop with preserve_path
+
+This is a subtle bug — a prefix rule with `preserve_path: true` redirecting to a destination that starts with the same prefix:
+
+```yaml
+rules:
+  - id: migrate-docs
+    match:
+      type: prefix
+      path: /docs/
+    redirect:
+      to: /docs/v2/
+      preserve_path: true
+      status: 301
+```
+
+What happens at runtime: `/docs/api` → `/docs/v2/api` → `/docs/v2/v2/api` → `/docs/v2/v2/v2/api` → ... (infinite expanding path).
+
+Lint output:
+```
+✗ ERRORS (1)
+─────────────────────────────────────────────────────────────────
+  [migrate-docs] Prefix rule 'migrate-docs' with preserve_path creates a self-loop:
+    match '/docs/' redirects to '/docs/v2/' which is within the same prefix
+    → Change the destination to a path outside the match prefix, or disable preserve_path
+```
+
+**Fix:** Change the destination to a path outside the match prefix:
+```yaml
+  - id: migrate-docs
+    match:
+      type: prefix
+      path: /docs/
+    redirect:
+      to: /documentation/v2/    # Outside /docs/ — no loop
+      preserve_path: true
+      status: 301
+```
+
+#### Example: Regex Warning (Best-Effort)
+
+Regex rules can't always be statically analyzed (regex intersection is undecidable), so the linter generates sample paths and traces them through the rules:
+
+```yaml
+rules:
+  - id: api-rewrite
+    match:
+      type: regex
+      pattern: "^/api/v1/(.*)"
+    redirect:
+      to: /api/v1/v2/$1     # Destination still matches ^/api/v1/(.*)!
+      status: 302
+```
+
+Lint output:
+```
+⚠ WARNINGS (1)
+─────────────────────────────────────────────────────────────────
+  [api-rewrite] Potential circular redirect: rule 'api-rewrite' destination '/api/v1/v2/$1'
+    may match the same rule (sample path: '/api/v1/sample' -> '/api/v1/v2/sample')
+    → Verify the destination does not fall within the rule's match pattern
+```
+
+#### Example: JSON Output for CI
+
+```bash
+./redirector-sync --lint --lint-config config.yaml --lint-json
+```
+
+```json
+{
+  "issues": [
+    {
+      "severity": "error",
+      "rule_id": "old-home",
+      "message": "Circular redirect detected: old-home -> new-home -> old-home",
+      "suggestion": "Remove one rule from the chain or change a destination to break the cycle"
+    },
+    {
+      "severity": "warning",
+      "rule_id": "api-rewrite",
+      "message": "Potential circular redirect: rule 'api-rewrite' destination '/api/v1/v2/$1' may match the same rule (sample path: '/api/v1/sample' -> '/api/v1/v2/sample')",
+      "suggestion": "Verify the destination does not fall within the rule's match pattern"
+    }
+  ],
+  "rules_count": 5,
+  "files_count": 0
+}
+```
+
+Use this in CI to gate deployments:
+```bash
+# In your config repo's CI pipeline
+if ! ./redirector-sync --lint --lint-config config.yaml; then
+  echo "Config validation failed — check for circular redirects"
+  exit 1
+fi
+```
+
+#### Webhook Response
+
+When the syncer receives a webhook and the fetched config has lint errors, the response includes the full issue list (instead of a generic "Sync failed"):
+
+```
+POST /webhook → HTTP 422 Unprocessable Entity
+```
+```json
+{
+  "status": "lint_failed",
+  "source": "github-primary",
+  "message": "lint errors found in config from source github-primary (1 errors)",
+  "issues": [
+    {
+      "severity": "error",
+      "rule_id": "old-home",
+      "message": "Circular redirect detected: old-home -> new-home -> old-home",
+      "suggestion": "Remove one rule from the chain or change a destination to break the cycle"
+    }
+  ]
+}
+```
+
+This lets CI pipelines that trigger syncs via webhook inspect the response and provide specific feedback to the user.
+
+#### Detection Limitations
+
+| Rule Type | Detection | Notes |
+|-----------|-----------|-------|
+| Exact | Deterministic | Full cycle detection via graph analysis |
+| Prefix | Deterministic | Includes `preserve_path` self-loop detection |
+| Regex | Best-effort (samples) | Generates representative paths and traces them; reported as warnings |
+| Glob | Best-effort (samples) | Same sample-based approach as regex; reported as warnings |
+| External URLs | Skipped | Destinations pointing to hosts not in `match.host` are assumed external |
 
 ---
 
