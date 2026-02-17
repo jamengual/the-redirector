@@ -3,6 +3,7 @@ package lint
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -91,6 +92,7 @@ func (l *Linter) Lint() *Result {
 	result.Issues = append(result.Issues, l.checkRegexPerformance()...)
 	result.Issues = append(result.Issues, l.checkUnreachableRules()...)
 	result.Issues = append(result.Issues, l.checkMissingDefaults()...)
+	result.Issues = append(result.Issues, l.checkCircularRedirects()...)
 
 	// Sort issues by severity
 	sort.SliceStable(result.Issues, func(i, j int) bool {
@@ -387,6 +389,439 @@ func (l *Linter) checkMissingDefaults() []Issue {
 	}
 
 	return issues
+}
+
+// checkCircularRedirects detects redirect loops by building a directed graph
+// and running DFS cycle detection. Exact and prefix rules produce error-severity
+// findings; regex/glob rules produce warnings (best-effort sample tracing).
+func (l *Linter) checkCircularRedirects() []Issue {
+	var issues []Issue
+
+	// Only consider redirect rules (3xx status)
+	redirectRules := make([]config.Rule, 0, len(l.cfg.Rules))
+	for _, rule := range l.cfg.Rules {
+		if rule.Redirect.IsRedirect() {
+			redirectRules = append(redirectRules, rule)
+		}
+	}
+
+	if len(redirectRules) == 0 {
+		return nil
+	}
+
+	// Collect all hosts from rules to determine which destinations are "local"
+	localHosts := l.collectLocalHosts()
+
+	// Build adjacency list: rule index -> list of rule indices it redirects to
+	adj := l.buildRedirectGraph(redirectRules, localHosts)
+
+	// DFS cycle detection with three-color marking
+	chains := l.findCycles(redirectRules, adj)
+
+	for _, chain := range chains {
+		ids := make([]string, len(chain))
+		for i, idx := range chain {
+			ids[i] = redirectRules[idx].ID
+		}
+		chainStr := strings.Join(ids, " -> ")
+
+		issues = append(issues, Issue{
+			Severity:   SeverityError,
+			RuleID:     ids[0],
+			Message:    fmt.Sprintf("Circular redirect detected: %s", chainStr),
+			Suggestion: "Remove one rule from the chain or change a destination to break the cycle",
+		})
+	}
+
+	// Check prefix self-loops (PreservePath redirecting back into own match space)
+	issues = append(issues, l.checkPrefixSelfLoops(redirectRules, localHosts)...)
+
+	// Best-effort regex/glob sample tracing
+	issues = append(issues, l.checkRegexGlobCycles(redirectRules, localHosts)...)
+
+	return issues
+}
+
+// collectLocalHosts returns the set of hosts defined in rules' match.host fields.
+// Destinations pointing to these hosts are considered "local" (could loop back).
+// If no rules specify a host, all relative-path destinations are local.
+func (l *Linter) collectLocalHosts() map[string]bool {
+	hosts := make(map[string]bool)
+	for _, rule := range l.cfg.Rules {
+		if rule.Match.Host != "" {
+			hosts[rule.Match.Host] = true
+		}
+	}
+	return hosts
+}
+
+// extractDestinationPath parses a redirect destination URL and returns the
+// local path if the destination points back to this service, or "" if external.
+func (l *Linter) extractDestinationPath(dest string, localHosts map[string]bool) string {
+	// Relative paths are always local
+	if strings.HasPrefix(dest, "/") {
+		return dest
+	}
+
+	parsed, err := url.Parse(dest)
+	if err != nil {
+		return ""
+	}
+
+	// If we have no local hosts defined, we can't determine locality from absolute URLs
+	if len(localHosts) == 0 {
+		return ""
+	}
+
+	// Check if the destination host is one of our local hosts
+	if localHosts[parsed.Hostname()] {
+		path := parsed.Path
+		if path == "" {
+			path = "/"
+		}
+		return path
+	}
+
+	return ""
+}
+
+// buildRedirectGraph creates an adjacency list mapping each rule index to
+// the indices of rules that would match the redirect destination.
+func (l *Linter) buildRedirectGraph(rules []config.Rule, localHosts map[string]bool) map[int][]int {
+	adj := make(map[int][]int)
+
+	for i, rule := range rules {
+		dest := rule.Redirect.GetLocation()
+		destPath := l.extractDestinationPath(dest, localHosts)
+		if destPath == "" {
+			continue
+		}
+
+		// Find which rules would match this destination path
+		for j, target := range rules {
+			if i == j {
+				continue // Self-loops handled separately in checkPrefixSelfLoops
+			}
+
+			if l.pathMatchesRule(destPath, target) {
+				adj[i] = append(adj[i], j)
+			}
+		}
+	}
+
+	return adj
+}
+
+// pathMatchesRule checks if a given path would be matched by a rule.
+func (l *Linter) pathMatchesRule(path string, rule config.Rule) bool {
+	switch rule.Match.Type {
+	case config.MatchTypeExact:
+		return path == rule.Match.Path
+	case config.MatchTypePrefix:
+		return strings.HasPrefix(path, rule.Match.Path)
+	case config.MatchTypeRegex:
+		if re := rule.CompiledRegex(); re != nil {
+			return re.MatchString(path)
+		}
+		// Try compiling the pattern for lint-time checking
+		re, err := regexp.Compile(rule.Match.Pattern)
+		if err != nil {
+			return false
+		}
+		return re.MatchString(path)
+	case config.MatchTypeGlob:
+		return l.globMatchesPath(rule.Match.Pattern, path)
+	}
+	return false
+}
+
+// globMatchesPath does a simple glob match for lint purposes.
+func (l *Linter) globMatchesPath(pattern, path string) bool {
+	// Handle common glob patterns
+	if pattern == "/**" || pattern == "/*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return strings.HasPrefix(path, prefix)
+	}
+	if strings.HasSuffix(pattern, "/*") {
+		prefix := strings.TrimSuffix(pattern, "/*")
+		return strings.HasPrefix(path, prefix+"/")
+	}
+	return false
+}
+
+// findCycles runs DFS on the redirect graph and returns all cycles found.
+// Each cycle is a slice of rule indices forming the loop.
+func (l *Linter) findCycles(rules []config.Rule, adj map[int][]int) [][]int {
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in progress (on current DFS stack)
+		black = 2 // done
+	)
+
+	color := make([]int, len(rules))
+	parent := make([]int, len(rules))
+	for i := range parent {
+		parent[i] = -1
+	}
+
+	var cycles [][]int
+	seen := make(map[string]bool) // Deduplicate cycles
+
+	var dfs func(u int, stack []int)
+	dfs = func(u int, stack []int) {
+		color[u] = gray
+		stack = append(stack, u)
+
+		for _, v := range adj[u] {
+			switch color[v] {
+			case gray:
+				// Found a cycle — extract the cycle from the stack
+				cycle := extractCycle(stack, v)
+				if cycle != nil {
+					key := cycleKey(cycle, rules)
+					if !seen[key] {
+						seen[key] = true
+						cycles = append(cycles, cycle)
+					}
+				}
+			case white:
+				dfs(v, stack)
+			}
+		}
+
+		color[u] = black
+	}
+
+	for i := range rules {
+		if color[i] == white {
+			dfs(i, nil)
+		}
+	}
+
+	return cycles
+}
+
+// extractCycle extracts the cycle portion from a DFS stack.
+// The cycle starts at the node 'start' and includes everything
+// after it on the stack, plus 'start' again to close the loop.
+func extractCycle(stack []int, start int) []int {
+	for i, node := range stack {
+		if node == start {
+			cycle := make([]int, len(stack)-i+1)
+			copy(cycle, stack[i:])
+			cycle[len(cycle)-1] = start // Close the loop
+			return cycle
+		}
+	}
+	return nil
+}
+
+// cycleKey produces a canonical string key for deduplication.
+// Rotates the cycle so the smallest rule ID comes first.
+func cycleKey(cycle []int, rules []config.Rule) string {
+	if len(cycle) <= 1 {
+		return ""
+	}
+	// Exclude the closing element (duplicate of first)
+	nodes := cycle[:len(cycle)-1]
+
+	// Find the minimum ID position
+	minIdx := 0
+	for i := 1; i < len(nodes); i++ {
+		if rules[nodes[i]].ID < rules[nodes[minIdx]].ID {
+			minIdx = i
+		}
+	}
+
+	// Rotate to start at minIdx
+	rotated := make([]string, len(nodes))
+	for i := range nodes {
+		rotated[i] = rules[nodes[(i+minIdx)%len(nodes)]].ID
+	}
+	return strings.Join(rotated, "->")
+}
+
+// checkPrefixSelfLoops detects prefix rules with PreservePath that redirect
+// back into their own match space, creating implicit self-loops.
+func (l *Linter) checkPrefixSelfLoops(rules []config.Rule, localHosts map[string]bool) []Issue {
+	var issues []Issue
+
+	for _, rule := range rules {
+		if rule.Match.Type != config.MatchTypePrefix || !rule.Redirect.PreservePath {
+			continue
+		}
+
+		dest := rule.Redirect.GetLocation()
+		destPath := l.extractDestinationPath(dest, localHosts)
+		if destPath == "" {
+			continue
+		}
+
+		// A prefix rule with PreservePath creates a self-loop when the
+		// destination path starts with (or equals) the match prefix.
+		// Example: match "/old/" with PreservePath, redirect to "/old/new/"
+		// Request for /old/foo → /old/new/foo → /old/new/new/foo → ...
+		if strings.HasPrefix(destPath, rule.Match.Path) {
+			issues = append(issues, Issue{
+				Severity: SeverityError,
+				RuleID:   rule.ID,
+				Message: fmt.Sprintf(
+					"Prefix rule '%s' with preserve_path creates a self-loop: "+
+						"match '%s' redirects to '%s' which is within the same prefix",
+					rule.ID, rule.Match.Path, destPath),
+				Suggestion: "Change the destination to a path outside the match prefix, or disable preserve_path",
+			})
+		}
+	}
+
+	return issues
+}
+
+// checkRegexGlobCycles uses sample URLs to detect potential cycles involving
+// regex and glob rules. These are reported as warnings since they're best-effort.
+func (l *Linter) checkRegexGlobCycles(rules []config.Rule, localHosts map[string]bool) []Issue {
+	var issues []Issue
+
+	for _, rule := range rules {
+		if rule.Match.Type != config.MatchTypeRegex && rule.Match.Type != config.MatchTypeGlob {
+			continue
+		}
+
+		// Generate sample paths for this rule
+		samples := l.generateSamplePaths(rule)
+		dest := rule.Redirect.GetLocation()
+
+		for _, sample := range samples {
+			// Simulate what the destination would be for this sample
+			resolvedDest := dest
+			if rule.Match.Type == config.MatchTypeRegex {
+				re := rule.CompiledRegex()
+				if re == nil {
+					var err error
+					re, err = regexp.Compile(rule.Match.Pattern)
+					if err != nil {
+						continue
+					}
+				}
+				if re.MatchString(sample) {
+					resolvedDest = re.ReplaceAllString(sample, dest)
+				}
+			}
+
+			destPath := l.extractDestinationPath(resolvedDest, localHosts)
+			if destPath == "" {
+				continue
+			}
+
+			// Check if the resolved destination would match the same rule
+			if l.pathMatchesRule(destPath, rule) {
+				issues = append(issues, Issue{
+					Severity: SeverityWarning,
+					RuleID:   rule.ID,
+					Message: fmt.Sprintf(
+						"Potential circular redirect: rule '%s' destination '%s' "+
+							"may match the same rule (sample path: '%s' -> '%s')",
+						rule.ID, dest, sample, destPath),
+					Suggestion: "Verify the destination does not fall within the rule's match pattern",
+				})
+				break // One warning per rule is enough
+			}
+
+			// Check if destination matches any other regex/glob rule that
+			// could redirect back
+			for _, other := range rules {
+				if other.ID == rule.ID {
+					continue
+				}
+				if l.pathMatchesRule(destPath, other) {
+					otherDest := other.Redirect.GetLocation()
+					otherDestPath := l.extractDestinationPath(otherDest, localHosts)
+					if otherDestPath != "" && l.pathMatchesRule(otherDestPath, rule) {
+						issues = append(issues, Issue{
+							Severity: SeverityWarning,
+							RuleID:   rule.ID,
+							Message: fmt.Sprintf(
+								"Potential circular redirect: '%s' -> '%s' -> '%s' "+
+									"(sample: '%s' -> '%s' -> '%s')",
+								rule.ID, other.ID, rule.ID,
+								sample, destPath, otherDestPath),
+							Suggestion: "Verify these rules don't create a redirect loop",
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return issues
+}
+
+// generateSamplePaths creates representative sample paths for a regex or glob rule.
+func (l *Linter) generateSamplePaths(rule config.Rule) []string {
+	switch rule.Match.Type {
+	case config.MatchTypeRegex:
+		return generateRegexSamples(rule.Match.Pattern)
+	case config.MatchTypeGlob:
+		return generateGlobSamples(rule.Match.Pattern)
+	}
+	return nil
+}
+
+// generateRegexSamples produces sample paths from a regex pattern by
+// replacing common capture groups with representative values.
+func generateRegexSamples(pattern string) []string {
+	// Strip anchors for replacement
+	p := strings.TrimPrefix(pattern, "^")
+	p = strings.TrimSuffix(p, "$")
+
+	// Replace common capture group patterns with sample values
+	replacements := []struct {
+		re   *regexp.Regexp
+		repl string
+	}{
+		{regexp.MustCompile(`\(\\d\+\)`), "123"},
+		{regexp.MustCompile(`\(\[^/\]\+\)`), "sample"},
+		{regexp.MustCompile(`\(\[^/\]\*\)`), "sample"},
+		{regexp.MustCompile(`\(\.\+\)`), "test/path"},
+		{regexp.MustCompile(`\(\.\*\)`), "test"},
+		{regexp.MustCompile(`\(\.\+\?\)`), "t"},
+		{regexp.MustCompile(`\(\.\*\?\)`), "t"},
+		{regexp.MustCompile(`\\d\+`), "123"},
+		{regexp.MustCompile(`\[^/\]\+`), "sample"},
+		{regexp.MustCompile(`\[^/\]\*`), "sample"},
+		{regexp.MustCompile(`\.\+`), "test/path"},
+		{regexp.MustCompile(`\.\*`), "test"},
+	}
+
+	sample := p
+	for _, r := range replacements {
+		sample = r.re.ReplaceAllString(sample, r.repl)
+	}
+
+	// Ensure it starts with /
+	if !strings.HasPrefix(sample, "/") {
+		sample = "/" + sample
+	}
+
+	return []string{sample}
+}
+
+// generateGlobSamples produces sample paths from a glob pattern.
+func generateGlobSamples(pattern string) []string {
+	sample := pattern
+	sample = strings.ReplaceAll(sample, "**", "sub/path")
+	sample = strings.ReplaceAll(sample, "*", "sample")
+	sample = strings.ReplaceAll(sample, "?", "x")
+
+	if !strings.HasPrefix(sample, "/") {
+		sample = "/" + sample
+	}
+
+	return []string{sample}
 }
 
 // SourceInput represents a config source for multi-source linting.

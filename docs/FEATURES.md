@@ -428,12 +428,13 @@ SUGGESTIONS:
 
 ### Checks
 
-1. **Duplicate IDs** - Same rule ID in multiple files
-2. **Overlapping patterns** - Rules that match same paths
-3. **Greedy patterns** - Patterns that may shadow other rules
-4. **Invalid regex** - Syntax errors in patterns
-5. **Performance suggestions** - Regex optimization hints
-6. **Unreachable rules** - Rules that will never match
+1. **Circular redirects** - Detects redirect loops via graph cycle detection (exact/prefix as errors, regex/glob as warnings). Catches direct cycles (A→B→A), transitive chains, prefix self-loops with `preserve_path`, and cross-host cycles
+2. **Duplicate IDs** - Same rule ID in multiple files
+3. **Overlapping patterns** - Rules that match same paths
+4. **Greedy patterns** - Patterns that may shadow other rules
+5. **Invalid regex** - Syntax errors in patterns
+6. **Performance suggestions** - Regex optimization hints
+7. **Unreachable rules** - Rules that will never match
 
 ### Implementation
 

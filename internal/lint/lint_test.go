@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jamengual/the-redirector/internal/config"
@@ -396,6 +397,339 @@ func TestMultiSourceLinter_RulesPerSource(t *testing.T) {
 	if result.RulesPerSource["source-2"] != 1 {
 		t.Errorf("Expected 1 rule for source-2, got %d", result.RulesPerSource["source-2"])
 	}
+}
+
+// --- Circular Redirect Detection Tests ---
+
+func TestLinter_CheckCircularRedirects_DirectCycle(t *testing.T) {
+	// A -> B -> A (exact rules redirecting to relative paths)
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "rule-a",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/page-a"},
+				Redirect: config.Redirect{Status: 301, To: "/page-b"},
+			},
+			{
+				ID:       "rule-b",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/page-b"},
+				Redirect: config.Redirect{Status: 301, To: "/page-a"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	errors := result.Errors()
+	found := false
+	for _, e := range errors {
+		if e.RuleID == "rule-a" || e.RuleID == "rule-b" {
+			if contains(e.Message, "Circular redirect detected") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected error for direct circular redirect (A -> B -> A)")
+		for _, e := range errors {
+			t.Logf("  Error: %s (rule: %s)", e.Message, e.RuleID)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_TransitiveCycle(t *testing.T) {
+	// A -> B -> C -> A
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "rule-a",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/a"},
+				Redirect: config.Redirect{Status: 301, To: "/b"},
+			},
+			{
+				ID:       "rule-b",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/b"},
+				Redirect: config.Redirect{Status: 302, To: "/c"},
+			},
+			{
+				ID:       "rule-c",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/c"},
+				Redirect: config.Redirect{Status: 301, To: "/a"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	errors := result.Errors()
+	found := false
+	for _, e := range errors {
+		if contains(e.Message, "Circular redirect detected") &&
+			contains(e.Message, "rule-a") &&
+			contains(e.Message, "rule-b") &&
+			contains(e.Message, "rule-c") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected error for transitive circular redirect (A -> B -> C -> A)")
+		for _, e := range errors {
+			t.Logf("  Error: %s (rule: %s)", e.Message, e.RuleID)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_NoCycle(t *testing.T) {
+	// A -> B, C -> D — no cycles
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "rule-a",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/a"},
+				Redirect: config.Redirect{Status: 301, To: "/b"},
+			},
+			{
+				ID:       "rule-b",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/b"},
+				Redirect: config.Redirect{Status: 301, To: "/final"},
+			},
+			{
+				ID:       "rule-c",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/c"},
+				Redirect: config.Redirect{Status: 301, To: "/d"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	for _, e := range result.Errors() {
+		if contains(e.Message, "Circular redirect") {
+			t.Errorf("Expected no circular redirect errors, got: %s", e.Message)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_ExternalDestination(t *testing.T) {
+	// Rules redirect to external hosts — should not be flagged as cycles
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "to-google",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/search"},
+				Redirect: config.Redirect{Status: 301, To: "https://google.com/search"},
+			},
+			{
+				ID:       "to-github",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/code"},
+				Redirect: config.Redirect{Status: 301, To: "https://github.com/"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	for _, e := range result.Errors() {
+		if contains(e.Message, "Circular redirect") {
+			t.Errorf("Expected no circular redirect errors for external destinations, got: %s", e.Message)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_CrossHostCycle(t *testing.T) {
+	// Rules with match.host — redirect to the same host creating a cycle
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "host-a",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/page1", Host: "example.com"},
+				Redirect: config.Redirect{Status: 301, To: "https://example.com/page2"},
+			},
+			{
+				ID:       "host-b",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/page2", Host: "example.com"},
+				Redirect: config.Redirect{Status: 301, To: "https://example.com/page1"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	errors := result.Errors()
+	found := false
+	for _, e := range errors {
+		if contains(e.Message, "Circular redirect detected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected error for cross-host circular redirect")
+		for _, e := range errors {
+			t.Logf("  Error: %s (rule: %s)", e.Message, e.RuleID)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_PrefixSelfLoop(t *testing.T) {
+	// Prefix rule with preserve_path redirecting into its own match space
+	// /old/ -> /old/new/ with preserve_path
+	// Request for /old/foo -> /old/new/foo -> /old/new/new/foo -> infinite
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "self-loop",
+				Match:    config.Match{Type: config.MatchTypePrefix, Path: "/old/"},
+				Redirect: config.Redirect{Status: 301, To: "/old/new/", PreservePath: true},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	errors := result.Errors()
+	found := false
+	for _, e := range errors {
+		if e.RuleID == "self-loop" && contains(e.Message, "self-loop") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected error for prefix self-loop with preserve_path")
+		for _, e := range errors {
+			t.Logf("  Error: %s (rule: %s)", e.Message, e.RuleID)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_PrefixNoSelfLoop(t *testing.T) {
+	// Prefix rule with preserve_path but destination is OUTSIDE the match space
+	// /old/ -> /new/ with preserve_path — safe, no loop
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "safe-prefix",
+				Match:    config.Match{Type: config.MatchTypePrefix, Path: "/old/"},
+				Redirect: config.Redirect{Status: 301, To: "/new/", PreservePath: true},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	for _, e := range result.Errors() {
+		if e.RuleID == "safe-prefix" && contains(e.Message, "self-loop") {
+			t.Errorf("Expected no self-loop error for safe prefix rule, got: %s", e.Message)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_NonRedirectSkipped(t *testing.T) {
+	// Non-redirect rules (404, 503) should be completely skipped
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "not-found",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/missing"},
+				Redirect: config.Redirect{Status: 404, Body: "Not Found"},
+			},
+			{
+				ID:       "maintenance",
+				Match:    config.Match{Type: config.MatchTypeExact, Path: "/api"},
+				Redirect: config.Redirect{Status: 503, Body: "Maintenance"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	for _, e := range result.Errors() {
+		if contains(e.Message, "Circular redirect") {
+			t.Errorf("Expected no circular redirect errors for non-redirect rules, got: %s", e.Message)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_PrefixCrossCycle(t *testing.T) {
+	// Two prefix rules creating a cross-cycle
+	// /foo/ -> /bar/  and  /bar/ -> /foo/
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "foo-to-bar",
+				Match:    config.Match{Type: config.MatchTypePrefix, Path: "/foo/"},
+				Redirect: config.Redirect{Status: 301, To: "/bar/"},
+			},
+			{
+				ID:       "bar-to-foo",
+				Match:    config.Match{Type: config.MatchTypePrefix, Path: "/bar/"},
+				Redirect: config.Redirect{Status: 301, To: "/foo/"},
+			},
+		},
+	}
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	errors := result.Errors()
+	found := false
+	for _, e := range errors {
+		if contains(e.Message, "Circular redirect detected") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected error for prefix cross-cycle (/foo/ -> /bar/ -> /foo/)")
+		for _, e := range errors {
+			t.Logf("  Error: %s (rule: %s)", e.Message, e.RuleID)
+		}
+	}
+}
+
+func TestLinter_CheckCircularRedirects_RegexSelfCycle(t *testing.T) {
+	// Regex rule that redirects back into its own match pattern
+	// ^/api/v1/(.*) -> /api/v1/v2/$1
+	// This destination /api/v1/v2/... still matches ^/api/v1/(.*)
+	cfg := &config.Config{
+		Rules: []config.Rule{
+			{
+				ID:       "api-loop",
+				Match:    config.Match{Type: config.MatchTypeRegex, Pattern: "^/api/v1/(.*)"},
+				Redirect: config.Redirect{Status: 301, To: "/api/v1/v2/$1"},
+			},
+		},
+	}
+
+	_ = cfg.Validate() // Compile regex
+
+	linter := New(cfg)
+	result := linter.Lint()
+
+	warnings := result.Warnings()
+	found := false
+	for _, w := range warnings {
+		if w.RuleID == "api-loop" && contains(w.Message, "Potential circular redirect") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected warning for regex self-cycle")
+		for _, w := range warnings {
+			t.Logf("  Warning: %s (rule: %s)", w.Message, w.RuleID)
+		}
+	}
+}
+
+// contains checks if a string contains a substring (test helper).
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
 
 func TestMultiSourceResult_HasErrors(t *testing.T) {

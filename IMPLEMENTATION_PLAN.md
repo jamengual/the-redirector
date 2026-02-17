@@ -622,6 +622,99 @@ This document outlines the phased implementation approach for building The Redir
 
 ---
 
+## Phase 9: Circular Redirect Detection & Mitigation
+**Goal**: Detect redirect loops at config-time and protect against them at runtime
+**Status**: Not Started
+
+### Stage 9.1: Static Cycle Detection (Lint Check)
+**Goal**: Detect circular redirect chains at lint/config-load time
+**Status**: Complete ✓
+**Success Criteria**: Lint catches direct cycles (A→B→A), transitive cycles (A→B→C→A), and self-loops for exact and prefix rules. Regex/glob cycles reported as warnings.
+
+**Implementation**: `internal/lint/lint.go` — new `checkCircularRedirects()` method
+
+**Approach**: Build a directed graph from redirect rules and detect cycles with DFS (three-color marking: white→gray→black). Each rule is an edge from its match path to its redirect destination.
+
+**Edge Construction by Match Type**:
+- **Exact**: Edge from `rule.Match.Path` → parsed path of `rule.Redirect.GetLocation()`
+- **Prefix with PreservePath**: Edge from `rule.Match.Path` → parsed path of `rule.Redirect.GetLocation()` + check if destination falls within the prefix's match space (self-loop detection)
+- **Regex/Glob**: Generate 3-5 sample paths using heuristics (e.g., replace `(\d+)` with `123`, `(.*)` with `test`), trace each sample through all rules. Report as `SeverityWarning` (best-effort, not provably correct)
+
+**Graph Node Normalization**:
+- Strip scheme and host from destinations that point back to the same service (detect via `match.host` or relative URLs)
+- Normalize trailing slashes for comparison
+- Only consider redirect rules (3xx status), skip non-redirect responses
+
+**Cycle Detection Algorithm**:
+1. Build adjacency list from redirect rules
+2. DFS with three colors: unvisited, in-progress, done
+3. When an in-progress node is revisited → cycle found
+4. Track the full chain for error messages (e.g., "Circular redirect: rule-A → rule-B → rule-C → rule-A")
+
+**Tasks**:
+- [ ] Add `checkCircularRedirects()` method to `Linter`
+- [ ] Implement `buildRedirectGraph()` helper — returns adjacency list of rule ID → destination rule IDs
+- [ ] Implement `extractDestinationPath()` — parse redirect URL, normalize, return local path (or "" if external)
+- [ ] Implement `findCycles()` — DFS cycle detection returning chains
+- [ ] Handle `PreservePath` prefix self-loops (destination prefix matches source prefix)
+- [ ] Best-effort regex/glob sample tracing (generate sample URLs, trace through rules)
+- [ ] Register check in `Lint()` method
+- [ ] Write tests: direct cycle, transitive cycle, self-loop, prefix self-loop, no-cycle (clean config), cross-host cycle, external destination (no cycle), regex sample-based warning
+- [ ] Multi-source cycle detection: add `checkCrossSourceCycles()` to `MultiSourceLinter`
+
+**Tests**: `internal/lint/lint_test.go`
+
+### Stage 9.2: Runtime Loop Protection
+**Goal**: Break redirect loops at request time via hop counter header
+**Status**: Not Started
+**Success Criteria**: Requests that bounce through the redirector more than N times (default: 10) receive 508 Loop Detected instead of another redirect. Zero performance impact on non-looping requests (single header read).
+
+**Implementation**: `internal/server/server.go` — modify `handleRedirect()`
+
+**Approach**:
+1. On incoming request, read `X-Redirect-Count` header (integer, default 0)
+2. If count >= max (configurable, default 10), return **508 Loop Detected** with diagnostic body
+3. If count < max, set `X-Redirect-Count: count+1` on the redirect response
+4. Add `redirector_loop_detected_total` counter metric
+
+**Why X-Redirect-Count**:
+- Only works when the redirector redirects back to itself (the most dangerous case)
+- Zero cost on first-hop requests (just a header read)
+- RFC 8586 CDN-Loop is designed for multi-CDN chains — this is simpler and fits the single-service case
+
+**Configuration**:
+```yaml
+server:
+  max_redirect_hops: 10  # default, 0 = disabled
+```
+
+**Tasks**:
+- [ ] Add `MaxRedirectHops` field to `ServerConfig` (default: 10)
+- [ ] Read `X-Redirect-Count` header in `handleRedirect()`, before rule matching
+- [ ] If count >= max: return 508, increment metric, log warning with request path and chain length
+- [ ] If redirect: set `X-Redirect-Count: count+1` on response
+- [ ] Add `LoopDetectedTotal` counter to `Metrics` struct
+- [ ] Wire metric in server
+- [ ] Write tests: no header (first hop), header at max (508 response), header below max (incremented), disabled (max=0 bypasses check), non-redirect response (no header added)
+- [ ] Update docs: MANAGEMENT_API.md (new metric), CONFIGURATION.md (new field), README.md (mention in DDoS section)
+
+**Tests**: `internal/server/server_test.go`
+
+### Stage 9.3: Lint CLI Output for Cycles
+**Goal**: Clear, actionable lint output for circular redirect findings
+**Status**: Not Started
+**Success Criteria**: `redirector-sync --lint` shows circular redirect chains with visual arrows and suggested fixes
+
+**Tasks**:
+- [ ] Format cycle chains as: `⟳ Circular redirect detected: rule-A → rule-B → rule-C → rule-A`
+- [ ] Include rule IDs, match paths, and destinations in the cycle report
+- [ ] Suggest fixes: "Remove one rule from the chain or change the destination to break the cycle"
+- [ ] JSON output includes cycle details for CI integration
+
+**Tests**: `internal/lint/lint_test.go` (output formatting)
+
+---
+
 ## Remaining Work
 
 ### Priority 1 (Recommended)
@@ -632,6 +725,7 @@ This document outlines the phased implementation approach for building The Redir
 - [x] AWS Secrets Manager (Phase 5.3) ✓
 - [x] Multi-cloud providers (Phase 5.4) ✓
 - [ ] Multi-Tenancy (Phase 8.1)
+- [ ] Circular Redirect Detection (Phase 9)
 
 ---
 

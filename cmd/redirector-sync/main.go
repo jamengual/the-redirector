@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -310,12 +311,27 @@ func startWebhookServer(ctx context.Context, port int, secret string, syncer *Sy
 
 		if err := syncer.SyncOnce(syncCtx, false); err != nil {
 			log.Error().Err(err).Msg("Webhook-triggered sync failed")
+
+			// Return lint issues in the response body when available
+			var lintErr *LintError
+			if errors.As(err, &lintErr) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":  "lint_failed",
+					"source":  lintErr.Source,
+					"message": lintErr.Error(),
+					"issues":  lintErr.Result.Issues,
+				})
+				return
+			}
+
 			http.Error(w, "Sync failed", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +404,19 @@ func loadSyncerConfig(path string) (*SyncerConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// LintError is returned when a sync fails due to lint issues.
+// It carries the full lint result so callers (like webhook handlers) can
+// surface the actual issues to the user instead of a generic "sync failed".
+type LintError struct {
+	Source string
+	Result *lint.Result
+}
+
+func (e *LintError) Error() string {
+	return fmt.Sprintf("lint errors found in config from source %s (%d errors)",
+		e.Source, len(e.Result.Errors()))
 }
 
 // Syncer handles config synchronization.
@@ -723,7 +752,7 @@ func (s *Syncer) SyncOnce(ctx context.Context, dryRun bool) error {
 			s.mu.Lock()
 			s.syncErrors++
 			s.mu.Unlock()
-			return fmt.Errorf("lint errors found in config from source %s", src.Name())
+			return &LintError{Source: src.Name(), Result: lintResult}
 		}
 
 		for _, issue := range lintResult.Warnings() {
